@@ -1,0 +1,13 @@
+:8080 {
+    handle_path /budget/* {
+        reverse_proxy localhost:3004 {
+            header_up X-Forwarded-Prefix /budget
+        }
+    }
+
+    handle_path /budget {
+        reverse_proxy localhost:3004 {
+            header_up X-Forwarded-Prefix /budget
+        }
+    }
+}

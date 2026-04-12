@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  assetPrefix: '/budget',
+  serverExternalPackages: ['better-sqlite3'],
 };
 
 export default nextConfig;

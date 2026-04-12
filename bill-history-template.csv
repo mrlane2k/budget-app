@@ -1,0 +1,10 @@
+bill_name,category,frequency,jan_2025,feb_2025,mar_2025,apr_2025,may_2025,jun_2025,jul_2025,aug_2025,sep_2025,oct_2025,nov_2025,dec_2025,notes
+Electric,Utilities,monthly,,,,,,,,,,,,Variable — enter actual amounts paid each month
+Nipsco,Utilities,monthly,,,,,,,,,,,,Variable — gas bill, higher in winter
+Car Insurance,Insurance,semi-annually,,,,,,,,,,,,Enter amount for the months it was paid (typically 2x/year)
+Internet,Utilities,monthly,,,,,,,,,,,,Fixed — leave blank if never changed
+Gym,Subscriptions,monthly,,,,,,,,,,,,Fixed — leave blank if never changed
+Mortgagte,Housing,monthly,,,,,,,,,,,,Enter actual payment (may vary if escrow adjusts)
+Phone,Utilities,monthly,,,,,,,,,,,,Fixed — leave blank if never changed
+Tesla,Transportation,monthly,,,,,,,,,,,,Fixed — leave blank if never changed
+Youtube,Subscriptions,monthly,,,,,,,,,,,,Fixed — leave blank if never changed
