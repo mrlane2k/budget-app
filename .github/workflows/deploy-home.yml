@@ -1,0 +1,80 @@
+name: Deploy Home Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on:
+      - self-hosted
+      - Linux
+    env:
+      APP_DIR: /srv/budget-app/app
+      ENV_FILE: /etc/budget-app/budget-app.env
+      SERVICE_NAME: budget-app
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify server prerequisites
+        shell: bash
+        run: |
+          test -f "$ENV_FILE"
+          mkdir -p "$APP_DIR"
+
+      - name: Validate runtime environment
+        shell: bash
+        run: |
+          set -a
+          . "$ENV_FILE"
+          set +a
+          test -n "$DATABASE_URL"
+          test -n "$JWT_SECRET"
+          test -n "$APP_BASE_PATH"
+          test -n "$APP_ORIGIN"
+          test -n "$PORT"
+
+      - name: Sync application files
+        shell: bash
+        run: |
+          rsync -a --delete \
+            --exclude ".git" \
+            --exclude "node_modules" \
+            --exclude ".next" \
+            --exclude "budget.db" \
+            --exclude "budget.db-shm" \
+            --exclude "budget.db-wal" \
+            ./ "$APP_DIR"/
+
+      - name: Install dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: npm ci
+
+      - name: Run database migrations
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -a
+          . "$ENV_FILE"
+          set +a
+          npm run db:migrate
+
+      - name: Build application
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -a
+          . "$ENV_FILE"
+          set +a
+          npm run build
+
+      - name: Restart service
+        shell: bash
+        run: sudo systemctl restart "$SERVICE_NAME"
+
+      - name: Verify service status
+        shell: bash
+        run: sudo systemctl --no-pager --full status "$SERVICE_NAME"

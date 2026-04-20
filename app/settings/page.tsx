@@ -187,11 +187,12 @@ export default function SettingsPage() {
                     step="0.01"
                     value={currentSavings}
                     onChange={e => setCurrentSavings(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-7 pr-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-7 pr-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:text-gray-500"
                     placeholder="0.00"
+                    disabled
                   />
                 </div>
-                <p className="text-gray-600 text-xs mt-1.5">Used to calculate your current emergency fund runway</p>
+                <p className="text-gray-600 text-xs mt-1.5">Now managed from the Cash Buckets page so your savings balance stays aligned with transfers and manual cash entries.</p>
               </div>
 
               {saveMsg && (
@@ -282,15 +283,15 @@ export default function SettingsPage() {
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-gray-500">Storage</span>
-                <span className="text-gray-300">Local SQLite (budget.db)</span>
+                <span className="text-gray-300">Managed Postgres (DATABASE_URL)</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-500">Auth</span>
                 <span className="text-gray-300">bcrypt + JWT (httpOnly cookie)</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">Data location</span>
-                <span className="text-gray-300 font-mono text-xs">./budget.db</span>
+                <span className="text-gray-500">Base path</span>
+                <span className="text-gray-300 font-mono text-xs">APP_BASE_PATH</span>
               </div>
             </div>
           </div>

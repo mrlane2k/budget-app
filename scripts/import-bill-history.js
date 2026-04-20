@@ -1,70 +1,98 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports */
 /**
- * Import bill history from CSV and update bill amounts to rolling 12-month average.
+ * Import bill history from CSV and update bill amounts to a rolling average.
  * Usage: node scripts/import-bill-history.js bill-history-template.csv
- * 
- * Only updates bills where variable amounts were entered.
- * Bills with all blanks are left unchanged.
  */
 
 const fs = require('fs');
-const path = require('path');
-const Database = require('better-sqlite3');
+const { Client } = require('pg');
+const { loadEnvConfig } = require('@next/env');
 
-const csvPath = process.argv[2];
-if (!csvPath) {
-  console.error('Usage: node scripts/import-bill-history.js <csv-file>');
-  process.exit(1);
+loadEnvConfig(process.cwd());
+
+function shouldUseSsl(connectionString) {
+  const url = new URL(connectionString);
+  const sslMode = url.searchParams.get('sslmode');
+
+  if (sslMode === 'disable') {
+    return false;
+  }
+
+  return !['localhost', '127.0.0.1'].includes(url.hostname);
 }
 
-const csv = fs.readFileSync(csvPath, 'utf8');
-const lines = csv.trim().split('\n');
-const headers = lines[0].split(',');
+(async () => {
+  const csvPath = process.argv[2];
+  const databaseUrl = process.env.DATABASE_URL;
 
-// Month columns: jan_2025 through dec_2025
-const monthCols = headers.slice(3, 15);
+  if (!csvPath) {
+    console.error('Usage: node scripts/import-bill-history.js <csv-file>');
+    process.exit(1);
+  }
 
-const db = new Database(path.join(__dirname, '..', 'budget.db'));
+  if (!databaseUrl) {
+    console.error('DATABASE_URL is required');
+    process.exit(1);
+  }
 
-let updated = 0;
-let skipped = 0;
+  const csv = fs.readFileSync(csvPath, 'utf8');
+  const lines = csv.trim().split('\n');
+  const client = new Client({
+    connectionString: databaseUrl,
+    ssl: shouldUseSsl(databaseUrl) ? { rejectUnauthorized: false } : undefined,
+  });
 
-for (let i = 1; i < lines.length; i++) {
-  const line = lines[i];
-  if (!line.trim() || line.startsWith('//')) continue;
+  await client.connect();
 
-  const cols = line.split(',');
-  const billName = cols[0]?.trim();
-  if (!billName) continue;
+  let updated = 0;
+  let skipped = 0;
 
-  // Get all non-empty month values
-  const amounts = [];
-  for (let m = 0; m < 12; m++) {
-    const val = cols[3 + m]?.trim();
-    if (val && !isNaN(parseFloat(val))) {
-      amounts.push(parseFloat(val));
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim() || line.startsWith('//')) continue;
+
+    const cols = line.split(',');
+    const billName = cols[0]?.trim();
+    if (!billName) continue;
+
+    const amounts = [];
+    for (let month = 0; month < 12; month++) {
+      const value = cols[3 + month]?.trim();
+      if (value && !Number.isNaN(Number.parseFloat(value))) {
+        amounts.push(Number.parseFloat(value));
+      }
+    }
+
+    if (amounts.length === 0) {
+      console.log(`SKIP ${billName}: no history entered`);
+      skipped++;
+      continue;
+    }
+
+    const average =
+      amounts.reduce((sum, amount) => sum + amount, 0) / amounts.length;
+    const roundedAverage = Math.round(average * 100) / 100;
+
+    const result = await client.query(
+      'UPDATE bills SET amount = $1 WHERE name = $2 AND active = TRUE',
+      [roundedAverage, billName]
+    );
+
+    if ((result.rowCount ?? 0) > 0) {
+      console.log(
+        `UPDATED ${billName}: ${amounts.length} months of data, average $${roundedAverage}`
+      );
+      updated++;
+    } else {
+      console.log(`WARN ${billName}: bill not found or inactive`);
     }
   }
 
-  if (amounts.length === 0) {
-    console.log(`⏭  ${billName} — no history entered, skipping`);
-    skipped++;
-    continue;
-  }
+  await client.end();
+  console.log(`Done: ${updated} updated, ${skipped} skipped`);
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 
-  // Calculate rolling average
-  const avg = amounts.reduce((s, v) => s + v, 0) / amounts.length;
-  const rounded = Math.round(avg * 100) / 100;
-
-  // Update the bill
-  const result = db.prepare('UPDATE bills SET amount = ? WHERE name = ? AND active = 1').run(rounded, billName);
-  if (result.changes > 0) {
-    console.log(`✅ ${billName} — ${amounts.length} months of data, avg: $${rounded} (was updated)`);
-    updated++;
-  } else {
-    console.log(`⚠️  ${billName} — not found in DB or inactive`);
-  }
-}
-
-db.close();
-console.log(`\nDone: ${updated} updated, ${skipped} skipped (no data)`);

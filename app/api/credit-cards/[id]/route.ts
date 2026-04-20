@@ -1,53 +1,69 @@
-import { NextRequest, NextResponse } from 'next/server';
-import getDb from '@/lib/db';
-import { getUser } from '@/lib/auth';
+import { NextRequest, NextResponse } from "next/server";
+import { getUser } from "@/lib/auth";
+import {
+  deactivateCreditCard,
+  getCreditCardById,
+  updateCreditCard,
+} from "@/lib/data";
 
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function PUT(
+  request: NextRequest,
+  context: RouteContext<"/api/credit-cards/[id]">
+) {
   const userPayload = getUser(request);
   if (!userPayload) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { id } = await params;
-  const cardId = parseInt(id);
+  const { id } = await context.params;
+  const cardId = Number(id);
 
   try {
-    const { name, balance, credit_limit, minimum_payment, apr, due_day, last_four } = await request.json();
+    const { name, balance, credit_limit, minimum_payment, apr, due_day, last_four } =
+      await request.json();
 
-    const db = getDb();
-    const card = db.prepare('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?').get(cardId, userPayload.userId);
+    const card = await getCreditCardById(userPayload.userId, cardId);
     if (!card) {
-      return NextResponse.json({ error: 'Card not found' }, { status: 404 });
+      return NextResponse.json({ error: "Card not found" }, { status: 404 });
     }
 
-    db.prepare(`
-      UPDATE credit_cards SET name = ?, balance = ?, credit_limit = ?, minimum_payment = ?, apr = ?, due_day = ?, last_four = ?
-      WHERE id = ? AND user_id = ?
-    `).run(name, balance, credit_limit, minimum_payment, apr, due_day, last_four || null, cardId, userPayload.userId);
+    const updatedCard = await updateCreditCard(userPayload.userId, cardId, {
+      name,
+      balance: Number(balance),
+      credit_limit: Number(credit_limit),
+      minimum_payment: Number(minimum_payment),
+      apr: Number(apr),
+      due_day: Number(due_day),
+      last_four: last_four || null,
+    });
 
-    const updatedCard = db.prepare('SELECT * FROM credit_cards WHERE id = ?').get(cardId);
     return NextResponse.json(updatedCard);
   } catch (error) {
-    console.error('Update card error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error("Update card error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(
+  request: NextRequest,
+  context: RouteContext<"/api/credit-cards/[id]">
+) {
   const userPayload = getUser(request);
   if (!userPayload) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { id } = await params;
-  const cardId = parseInt(id);
+  const { id } = await context.params;
+  const cardId = Number(id);
 
-  const db = getDb();
-  const card = db.prepare('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?').get(cardId, userPayload.userId);
+  const card = await getCreditCardById(userPayload.userId, cardId);
   if (!card) {
-    return NextResponse.json({ error: 'Card not found' }, { status: 404 });
+    return NextResponse.json({ error: "Card not found" }, { status: 404 });
   }
 
-  db.prepare('UPDATE credit_cards SET active = 0 WHERE id = ? AND user_id = ?').run(cardId, userPayload.userId);
+  await deactivateCreditCard(userPayload.userId, cardId);
   return NextResponse.json({ success: true });
 }

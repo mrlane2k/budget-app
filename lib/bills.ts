@@ -36,7 +36,7 @@ export function getUpcomingDueDates(
   const results: Date[] = [];
 
   if (bill.frequency === 'monthly' || !bill.frequency) {
-    let candidate = new Date(today.getFullYear(), today.getMonth(), bill.due_day);
+    const candidate = new Date(today.getFullYear(), today.getMonth(), bill.due_day);
     if (candidate < today) candidate.setMonth(candidate.getMonth() + 1);
     while (candidate <= limit) {
       results.push(new Date(candidate));

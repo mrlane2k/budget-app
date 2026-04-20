@@ -36,6 +36,34 @@ interface UserSettings {
   extra_cc_payment: number;
 }
 
+interface BudgetComparison {
+  month: string;
+  label: string;
+  budget: {
+    bills_budget: number;
+    disposable_budget: number;
+    savings_target: number;
+    extra_debt_payment_target: number;
+  } | null;
+  actuals: {
+    bills: number;
+    disposable: number;
+    savings: number;
+    extraDebt: number;
+  };
+  variances: {
+    bills: number;
+    disposable: number;
+    savings: number;
+    extraDebt: number;
+  };
+  plannedTotal: number | null;
+  actualTotal: number;
+  monthStatus: 'open' | 'closed';
+  closedAt: string | null;
+  insights: string[];
+}
+
 function normalizeToMonthly(amount: number, frequency: string): number {
   switch (frequency) {
     case 'quarterly': return amount / 3;
@@ -60,7 +88,7 @@ function getNextPaycheckDate(payCycle: string, lastPaycheckDate: string): Date {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  let next = new Date(last);
+  const next = new Date(last);
 
   const advance = (d: Date) => {
     switch (payCycle) {
@@ -93,14 +121,22 @@ function formatCurrency(amount: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
 }
 
+function budgetVarianceTone(label: 'spending' | 'goal', variance: number) {
+  if (Math.abs(variance) < 0.01) return 'text-gray-300';
+  if (label === 'goal') return variance >= 0 ? 'text-emerald-400' : 'text-red-400';
+  return variance <= 0 ? 'text-emerald-400' : 'text-red-400';
+}
+
 export default function DashboardPage() {
   const [bills, setBills] = useState<Bill[]>([]);
   const [cards, setCards] = useState<CreditCard[]>([]);
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [ccPaymentSummary, setCcPaymentSummary] = useState<Record<number, { paid: boolean; amount_paid: number }>>({});
+  const [budgetComparison, setBudgetComparison] = useState<BudgetComparison | null>(null);
   const [loading, setLoading] = useState(true);
   const [targetMonths, setTargetMonths] = useState(6);
   const [extraCCPayment, setExtraCCPayment] = useState(0);
+  const now = new Date();
   const saveExtraCC = async (val: number) => {
     setExtraCCPayment(val);
     localStorage.setItem('budget_extra_payment', String(val));
@@ -117,11 +153,15 @@ export default function DashboardPage() {
       fetch(apiPath('/api/credit-cards')).then(r => r.json()),
       fetch(apiPath('/api/settings')).then(r => r.json()),
       fetch(apiPath('/api/credit-cards/payment-summary')).then(r => r.json()),
-    ]).then(([billsData, cardsData, settingsData, ccSummary]) => {
+      fetch(apiPath('/api/budget-vs-actual?months=2')).then(r => r.json()),
+    ]).then(([billsData, cardsData, settingsData, ccSummary, budgetData]) => {
       setBills(Array.isArray(billsData) ? billsData : []);
       setCards(Array.isArray(cardsData) ? cardsData : []);
       setSettings(settingsData);
       setCcPaymentSummary(ccSummary && typeof ccSummary === 'object' ? ccSummary : {});
+      setBudgetComparison(
+        Array.isArray(budgetData?.comparisons) ? (budgetData.comparisons.at(-1) ?? null) : null
+      );
       // Load extra CC payment from DB, fallback to localStorage
       const dbExtra = settingsData?.extra_cc_payment ?? 0;
       const lsExtra = parseFloat(localStorage.getItem('budget_extra_payment') ?? '0') || 0;
@@ -140,10 +180,6 @@ export default function DashboardPage() {
       </div>
     );
   }
-
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
 
   // Normalize all bills to monthly equivalents
   const totalBills = bills.reduce((sum, b) => sum + normalizeToMonthly(b.amount, b.frequency || 'monthly'), 0);
@@ -269,7 +305,7 @@ export default function DashboardPage() {
               ) : (
                 <p className="text-gray-500 text-sm">
                   Configure your pay cycle in{' '}
-                  <a href="/budget/settings" className="text-blue-400 hover:underline">Settings</a>.
+                  <a href="/settings" className="text-blue-400 hover:underline">Settings</a>.
                 </p>
               )}
             </div>
@@ -292,15 +328,115 @@ export default function DashboardPage() {
                 </div>
                 {topCard && (
                   <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-3 mt-2">
-                    <p className="text-blue-400 text-xs font-semibold uppercase tracking-wide mb-1">Attack First — Avalanche</p>
+                    <p className="text-blue-400 text-xs font-semibold uppercase tracking-wide mb-1">Attack First - Avalanche</p>
                     <p className="text-white text-sm font-medium">{topCard.name}</p>
                     <p className="text-gray-400 text-xs mt-0.5">
-                      {formatCurrency(topCard.balance)} balance · {topCard.apr}% APR
+                      {formatCurrency(topCard.balance)} balance - {topCard.apr}% APR
                     </p>
                   </div>
                 )}
               </div>
             </div>
+          </div>
+
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-white">This Month vs Plan</h2>
+                <p className="mt-1 text-sm text-gray-400">
+                  Budget health for {budgetComparison?.label ?? 'the current month'}.
+                </p>
+              </div>
+              <a
+                href="/budget"
+                className="inline-flex items-center rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-sm font-medium text-blue-300 hover:bg-blue-500/15"
+              >
+                Open budget view
+              </a>
+            </div>
+
+            {budgetComparison ? (
+              <>
+                <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                  <div className="rounded-lg border border-gray-800 bg-gray-800/30 p-4">
+                    <p className="text-xs uppercase tracking-wide text-gray-500">Review Status</p>
+                    <p className={`mt-2 text-xl font-bold ${
+                      budgetComparison.monthStatus === 'closed' ? 'text-emerald-300' : 'text-amber-300'
+                    }`}>
+                      {budgetComparison.monthStatus === 'closed' ? 'Closed' : 'Open'}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      {budgetComparison.closedAt
+                        ? `Closed on ${new Date(budgetComparison.closedAt).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}`
+                        : 'Still in active review on the calendar page.'}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-800/30 p-4">
+                    <p className="text-xs uppercase tracking-wide text-gray-500">Total Plan</p>
+                    <p className="mt-2 text-xl font-bold text-white">
+                      {budgetComparison.plannedTotal === null
+                        ? 'No budget'
+                        : formatCurrency(budgetComparison.plannedTotal)}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      {budgetComparison.budget
+                        ? 'Combined target for the month.'
+                        : 'Create a budget to unlock this panel.'}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-800/30 p-4">
+                    <p className="text-xs uppercase tracking-wide text-gray-500">Actual Activity</p>
+                    <p className="mt-2 text-xl font-bold text-cyan-300">
+                      {formatCurrency(budgetComparison.actualTotal)}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Total booked across bills, disposable, savings, and extra debt.
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-800/30 p-4">
+                    <p className="text-xs uppercase tracking-wide text-gray-500">Disposable</p>
+                    <p className={`mt-2 text-xl font-bold ${budgetVarianceTone('spending', budgetComparison.variances.disposable)}`}>
+                      {Math.abs(budgetComparison.variances.disposable) < 0.01
+                        ? 'On target'
+                        : budgetComparison.variances.disposable > 0
+                          ? `${formatCurrency(budgetComparison.variances.disposable)} over`
+                          : `${formatCurrency(Math.abs(budgetComparison.variances.disposable))} under`}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Actual {formatCurrency(budgetComparison.actuals.disposable)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-gray-800 bg-gray-800/30 p-4">
+                    <p className="text-xs uppercase tracking-wide text-gray-500">Savings Goal</p>
+                    <p className={`mt-2 text-xl font-bold ${budgetVarianceTone('goal', budgetComparison.variances.savings)}`}>
+                      {Math.abs(budgetComparison.variances.savings) < 0.01
+                        ? 'On target'
+                        : budgetComparison.variances.savings >= 0
+                          ? `${formatCurrency(budgetComparison.variances.savings)} ahead`
+                          : `${formatCurrency(Math.abs(budgetComparison.variances.savings))} short`}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Actual {formatCurrency(budgetComparison.actuals.savings)}
+                    </p>
+                  </div>
+                </div>
+
+                {budgetComparison.insights?.length ? (
+                  <div className="mt-4 rounded-lg border border-gray-800 bg-gray-800/25 p-4">
+                    <p className="text-xs uppercase tracking-wide text-gray-500">Budget Pulse</p>
+                    <p className="mt-2 text-sm text-gray-300">{budgetComparison.insights[0]}</p>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <p className="mt-4 text-sm text-gray-500">
+                No budget comparison is available yet. Save a monthly budget to start seeing plan-vs-actual progress here.
+              </p>
+            )}
           </div>
 
           {/* Leftover Calculator */}
@@ -323,12 +459,12 @@ export default function DashboardPage() {
                     <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Monthly</p>
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="text-gray-400 text-sm">Monthly income <span className="text-gray-600 text-xs">(paycheck × {paychecksPerMonth.toFixed(2)})</span></span>
+                        <span className="text-gray-400 text-sm">Monthly income <span className="text-gray-600 text-xs">(paycheck x {paychecksPerMonth.toFixed(2)})</span></span>
                         <span className="text-white text-sm font-medium">{formatCurrency(monthlyIncome)}</span>
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="text-gray-400 text-sm">Bills + minimums{extraCCPayment > 0 ? ` + ${formatCurrency(extraCCPayment)} extra CC` : ''}</span>
-                        <span className="text-red-400 text-sm">−{formatCurrency(totalObligations)}</span>
+                        <span className="text-red-400 text-sm">-{formatCurrency(totalObligations)}</span>
                       </div>
                       <div className="flex items-center justify-between pt-2 border-t border-gray-800">
                         <span className="text-gray-300 text-sm font-medium">Leftover after bills</span>
@@ -347,7 +483,7 @@ export default function DashboardPage() {
                       </div>
                       <div className="flex items-center justify-between">
                         <span className="text-gray-400 text-sm">Bills per paycheck</span>
-                        <span className="text-red-400 text-sm">−{formatCurrency(billsPerPaycheck)}</span>
+                        <span className="text-red-400 text-sm">-{formatCurrency(billsPerPaycheck)}</span>
                       </div>
                       <div className="flex items-center justify-between pt-2 border-t border-gray-800">
                         <span className="text-gray-300 text-sm font-medium">Left in pocket</span>
@@ -459,7 +595,7 @@ export default function DashboardPage() {
                     </p>
                   ) : (
                     <p className="text-xs text-green-400 mt-2">
-                      Goal reached — you have {currentRunway.toFixed(1)} months of runway
+                      Goal reached - you have {currentRunway.toFixed(1)} months of runway
                     </p>
                   )}
                 </div>
@@ -467,7 +603,7 @@ export default function DashboardPage() {
             ) : (
               <p className="text-gray-500 text-sm">
                 Add bills and credit cards to calculate runway. Set your savings in{' '}
-                <a href="/budget/settings" className="text-blue-400 hover:underline">Settings</a>.
+                <a href="/settings" className="text-blue-400 hover:underline">Settings</a>.
               </p>
             )}
           </div>
@@ -518,7 +654,7 @@ export default function DashboardPage() {
                     <div key={`cc-${card.id}`} className="flex items-center justify-between py-2.5 px-3 bg-gray-800/50 rounded-lg">
                       <div>
                         <p className="text-white text-sm font-medium">{card.name}</p>
-                        <p className="text-gray-500 text-xs">Credit Card · min payment</p>
+                        <p className="text-gray-500 text-xs">Credit Card - min payment</p>
                       </div>
                       <div className="flex items-center gap-4 text-right">
                         <div>

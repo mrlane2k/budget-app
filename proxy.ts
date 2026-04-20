@@ -1,23 +1,23 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { verifyToken } from '@/lib/auth';
+import { NextRequest, NextResponse } from "next/server";
+import { stripBasePath, withBasePath } from "@/lib/basepath";
 
 export function proxy(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-  const forwardedPrefix = request.headers.get('x-forwarded-prefix') ?? '';
-  // Allow public paths
-  if (
-    pathname.startsWith('/login') ||
-    pathname.startsWith('/api/auth') ||
-    pathname.startsWith('/_next') ||
-    pathname.startsWith('/favicon')
-  ) {
+  const requestPath = stripBasePath(request.nextUrl.pathname);
+  const isPublicPath =
+    requestPath === "/login" ||
+    requestPath === "/setup" ||
+    requestPath.startsWith("/api/auth") ||
+    requestPath.startsWith("/api/setup") ||
+    requestPath.startsWith("/_next") ||
+    requestPath.startsWith("/favicon");
+
+  if (isPublicPath) {
     return NextResponse.next();
   }
 
-  const token = request.cookies.get('auth_token')?.value;
-  if (!token || !verifyToken(token)) {
-    // Use the forwarded prefix so the browser lands on /budget/login
-    const loginUrl = new URL(`${forwardedPrefix}/login`, request.url);
+  const hasToken = Boolean(request.cookies.get("auth_token")?.value);
+  if (!hasToken) {
+    const loginUrl = new URL(withBasePath("/login"), request.url);
     return NextResponse.redirect(loginUrl);
   }
 
@@ -25,5 +25,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

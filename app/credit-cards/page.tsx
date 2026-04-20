@@ -1,7 +1,7 @@
 'use client';
 import { apiPath } from '@/lib/basepath';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
 
 interface CreditCard {
@@ -18,9 +18,12 @@ interface CreditCard {
 interface CreditCardTransaction {
   id: number;
   card_id: number;
-  type: 'payment' | 'interest';
+  type: 'purchase' | 'payment' | 'interest' | 'fee' | 'adjustment';
   amount: number;
   note: string | null;
+  category: string | null;
+  merchant_name: string | null;
+  source_account_id: number | null;
   transaction_date: string;
   created_at: string;
 }
@@ -36,16 +39,12 @@ interface CardForm {
 }
 
 interface PaymentForm {
-  payment_amount: string;
-  interest_amount: string;
+  entry_type: 'purchase' | 'payment' | 'interest' | 'fee' | 'adjustment';
+  amount: string;
   payment_date: string;
+  category: string;
+  merchant_name: string;
   note: string;
-}
-
-function calculateInterestFromPayment(card: CreditCard, paymentAmount: number): number {
-  const normalizedPayment = Math.max(0, paymentAmount || 0);
-  const remainingBalance = Math.max(0, card.balance - normalizedPayment);
-  return parseFloat(((remainingBalance * card.apr) / 100 / 12).toFixed(2));
 }
 
 const emptyForm: CardForm = {
@@ -59,9 +58,11 @@ const emptyForm: CardForm = {
 };
 
 const emptyPaymentForm: PaymentForm = {
-  payment_amount: '',
-  interest_amount: '',
+  entry_type: 'payment',
+  amount: '',
   payment_date: new Date().toISOString().slice(0, 10),
+  category: '',
+  merchant_name: '',
   note: '',
 };
 
@@ -79,16 +80,32 @@ function monthlyInterest(card: CreditCard): number {
   return parseFloat(((card.balance * card.apr) / 100 / 12).toFixed(2));
 }
 
-/** Estimate months to pay off a balance with fixed payment and APR */
-function monthsToPayoff(balance: number, monthlyPayment: number, apr: number): number | null {
-  if (balance <= 0) return 0;
-  const monthlyRate = apr / 100 / 12;
-  if (monthlyRate === 0) {
-    return Math.ceil(balance / monthlyPayment);
+function entryTypeLabel(type: CreditCardTransaction['type']) {
+  switch (type) {
+    case 'purchase': return 'Purchase';
+    case 'payment': return 'Payment';
+    case 'interest': return 'Interest';
+    case 'fee': return 'Fee';
+    case 'adjustment': return 'Adjustment';
+    default: return type;
   }
-  if (monthlyPayment <= balance * monthlyRate) return null;
-  const months = -Math.log(1 - (balance * monthlyRate) / monthlyPayment) / Math.log(1 + monthlyRate);
-  return Math.ceil(months);
+}
+
+function entryAmountClass(type: CreditCardTransaction['type'], amount: number) {
+  if (type === 'payment') return 'text-green-400';
+  if (type === 'interest' || type === 'fee') return 'text-orange-400';
+  if (type === 'purchase') return 'text-red-400';
+  return amount >= 0 ? 'text-blue-300' : 'text-emerald-400';
+}
+
+function entrySignedAmount(type: CreditCardTransaction['type'], amount: number) {
+  if (type === 'payment') {
+    return `-${formatCurrency(amount)}`;
+  }
+  if (type === 'adjustment' && amount < 0) {
+    return `-${formatCurrency(Math.abs(amount))}`;
+  }
+  return `+${formatCurrency(Math.abs(amount))}`;
 }
 
 export default function CreditCardsPage() {
@@ -105,14 +122,9 @@ export default function CreditCardsPage() {
   const [paymentError, setPaymentError] = useState('');
   const [transactions, setTransactions] = useState<Record<number, CreditCardTransaction[]>>({});
   const [expandedCardId, setExpandedCardId] = useState<number | null>(null);
-  const [extraPayment, setExtraPayment] = useState(() =>
+  const [extraPayment] = useState(() =>
     typeof window !== 'undefined' ? (localStorage.getItem('budget_extra_payment') ?? '100') : '100'
   );
-
-  const handleExtraPaymentChange = (val: string) => {
-    setExtraPayment(val);
-    if (typeof window !== 'undefined') localStorage.setItem('budget_extra_payment', val);
-  };
 
   const fetchCards = async () => {
     const res = await fetch(apiPath('/api/credit-cards'));
@@ -159,12 +171,13 @@ export default function CreditCardsPage() {
   };
 
   const openPayment = (card: CreditCard) => {
-    const defaultPayment = card.minimum_payment > 0 ? card.minimum_payment : 0;
     setPayingCard(card);
     setPaymentForm({
-      payment_amount: defaultPayment > 0 ? String(defaultPayment) : '',
-      interest_amount: calculateInterestFromPayment(card, defaultPayment).toFixed(2),
+      entry_type: 'payment',
+      amount: card.minimum_payment > 0 ? String(card.minimum_payment) : '',
       payment_date: new Date().toISOString().slice(0, 10),
+      category: '',
+      merchant_name: '',
       note: '',
     });
     setPaymentError('');
@@ -232,11 +245,14 @@ export default function CreditCardsPage() {
     setSaving(true);
     setPaymentError('');
 
-    const paymentAmount = parseFloat(paymentForm.payment_amount) || 0;
-    const interestAmount = parseFloat(paymentForm.interest_amount) || 0;
+    const rawAmount = parseFloat(paymentForm.amount) || 0;
+    const normalizedAmount =
+      paymentForm.entry_type === 'adjustment'
+        ? rawAmount
+        : Math.max(0, rawAmount);
 
-    if (paymentAmount <= 0 && interestAmount <= 0) {
-      setPaymentError('Enter a payment or interest amount');
+    if (normalizedAmount === 0) {
+      setPaymentError('Enter an amount for this ledger entry');
       setSaving(false);
       return;
     }
@@ -246,10 +262,16 @@ export default function CreditCardsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          payment_amount: paymentAmount,
-          interest_amount: interestAmount,
+          entries: [
+            {
+              type: paymentForm.entry_type,
+              amount: normalizedAmount,
+              category: paymentForm.category || null,
+              merchant_name: paymentForm.merchant_name || null,
+              note: paymentForm.note || null,
+            },
+          ],
           payment_date: paymentForm.payment_date,
-          note: paymentForm.note || null,
         }),
       });
 
@@ -293,7 +315,7 @@ export default function CreditCardsPage() {
     let balances = sortedByApr.map(c => ({ balance: c.balance, apr: c.apr, min: c.minimum_payment }));
     let month = 0;
     let totalInterest = 0;
-    let extraPool = extraMonthly;
+    const extraPool = extraMonthly;
     const MAX_MONTHS = 600;
     while (balances.some(b => b.balance > 0) && month < MAX_MONTHS) {
       month++;
@@ -447,8 +469,8 @@ export default function CreditCardsPage() {
               </thead>
               <tbody>
                 {cards.map((card, i) => (
-                  <>
-                    <tr key={card.id} className={`border-b border-gray-800/50 ${i % 2 === 0 ? '' : 'bg-gray-800/20'}`}>
+                  <Fragment key={card.id}>
+                    <tr className={`border-b border-gray-800/50 ${i % 2 === 0 ? '' : 'bg-gray-800/20'}`}>
                       <td className="px-5 py-3">
                         <span className="text-white text-sm font-medium">{card.name}</span>
                         {card.last_four && (
@@ -514,17 +536,22 @@ export default function CreditCardsPage() {
                           <div className="space-y-2">
                             <p className="text-sm font-medium text-white">Recent Ledger Entries</p>
                             {(transactions[card.id] || []).length === 0 ? (
-                              <p className="text-sm text-gray-500">No payment or interest entries yet.</p>
+                              <p className="text-sm text-gray-500">No ledger entries yet.</p>
                             ) : (
                               <div className="space-y-2">
                                 {transactions[card.id].map(tx => (
                                   <div key={tx.id} className="flex items-center justify-between bg-gray-800/60 rounded-lg px-3 py-2 text-sm">
                                     <div>
-                                      <p className="text-white capitalize">{tx.type}</p>
-                                      <p className="text-gray-500 text-xs">{tx.transaction_date}{tx.note ? ` · ${tx.note}` : ''}</p>
+                                      <p className="text-white">{entryTypeLabel(tx.type)}</p>
+                                      <p className="text-gray-500 text-xs">
+                                        {tx.transaction_date}
+                                        {tx.category ? ` · ${tx.category}` : ''}
+                                        {tx.merchant_name ? ` · ${tx.merchant_name}` : ''}
+                                        {tx.note ? ` · ${tx.note}` : ''}
+                                      </p>
                                     </div>
-                                    <span className={tx.type === 'payment' ? 'text-green-400 font-medium' : 'text-orange-400 font-medium'}>
-                                      {tx.type === 'payment' ? '−' : '+'}{formatCurrency(tx.amount)}
+                                    <span className={`${entryAmountClass(tx.type, tx.amount)} font-medium`}>
+                                      {entrySignedAmount(tx.type, tx.amount)}
                                     </span>
                                   </div>
                                 ))}
@@ -534,7 +561,7 @@ export default function CreditCardsPage() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
                 {cards.length === 0 && (
                   <tr>
@@ -581,34 +608,28 @@ export default function CreditCardsPage() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Payment Amount</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={paymentForm.payment_amount}
-                    onChange={e => {
-                      const payment_amount = e.target.value;
-                      const paymentValue = parseFloat(payment_amount) || 0;
-                      setPaymentForm({
-                        ...paymentForm,
-                        payment_amount,
-                        interest_amount: calculateInterestFromPayment(payingCard, paymentValue).toFixed(2),
-                      });
-                    }}
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Entry Type</label>
+                  <select
+                    value={paymentForm.entry_type}
+                    onChange={e => setPaymentForm({ ...paymentForm, entry_type: e.target.value as PaymentForm['entry_type'] })}
                     className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="0.00"
-                  />
+                  >
+                    <option value="purchase">Purchase</option>
+                    <option value="payment">Payment</option>
+                    <option value="interest">Interest</option>
+                    <option value="fee">Fee</option>
+                    <option value="adjustment">Adjustment</option>
+                  </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Interest Charged</label>
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Amount</label>
                   <input
                     type="number"
                     step="0.01"
-                    min="0"
-                    value={paymentForm.interest_amount}
-                    readOnly
-                    className="w-full bg-gray-800/60 border border-gray-700 rounded-lg px-3 py-2.5 text-gray-300 focus:outline-none"
+                    min={paymentForm.entry_type === 'adjustment' ? undefined : '0'}
+                    value={paymentForm.amount}
+                    onChange={e => setPaymentForm({ ...paymentForm, amount: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500"
                     placeholder="0.00"
                   />
                 </div>
@@ -623,6 +644,29 @@ export default function CreditCardsPage() {
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500"
                   required
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Category</label>
+                  <input
+                    type="text"
+                    value={paymentForm.category}
+                    onChange={e => setPaymentForm({ ...paymentForm, category: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="Optional category"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Merchant</label>
+                  <input
+                    type="text"
+                    value={paymentForm.merchant_name}
+                    onChange={e => setPaymentForm({ ...paymentForm, merchant_name: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="Optional merchant"
+                  />
+                </div>
               </div>
 
               <div>
@@ -643,11 +687,17 @@ export default function CreditCardsPage() {
               )}
 
               <div className="text-xs text-gray-500 bg-gray-800/50 rounded-lg p-3 space-y-1">
+                <div>Payments lower the card balance. Purchases, interest, and fees raise it.</div>
                 <div>
-                  Interest is automatically recalculated from the remaining balance after your payment.
-                </div>
-                <div>
-                  New balance will be approximately {formatCurrency(Math.max(0, payingCard.balance - (parseFloat(paymentForm.payment_amount) || 0) + (parseFloat(paymentForm.interest_amount) || 0)))}
+                  New balance will be approximately {formatCurrency(
+                    Math.max(
+                      0,
+                      payingCard.balance +
+                        (paymentForm.entry_type === 'payment'
+                          ? -(parseFloat(paymentForm.amount) || 0)
+                          : parseFloat(paymentForm.amount) || 0)
+                    )
+                  )}
                 </div>
               </div>
 

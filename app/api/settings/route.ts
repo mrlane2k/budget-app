@@ -1,27 +1,22 @@
-import { NextRequest, NextResponse } from 'next/server';
-import bcrypt from 'bcryptjs';
-import getDb from '@/lib/db';
-import { getUser } from '@/lib/auth';
+import bcrypt from "bcryptjs";
+import { NextRequest, NextResponse } from "next/server";
+import { getUser } from "@/lib/auth";
+import {
+  changeUserPassword,
+  getAuthUserByUsername,
+  getUserProfileById,
+  updateUserSettings,
+} from "@/lib/data";
 
 export async function GET(request: NextRequest) {
   const userPayload = getUser(request);
   if (!userPayload) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const db = getDb();
-  const user = db.prepare('SELECT id, username, pay_cycle, last_paycheck_date, monthly_income, current_savings, extra_cc_payment FROM users WHERE id = ?').get(userPayload.userId) as {
-    id: number;
-    username: string;
-    pay_cycle: string;
-    last_paycheck_date: string;
-    monthly_income: number;
-    current_savings: number;
-    extra_cc_payment: number;
-  } | undefined;
-
+  const user = await getUserProfileById(userPayload.userId);
   if (!user) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
   return NextResponse.json(user);
@@ -30,61 +25,50 @@ export async function GET(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   const userPayload = getUser(request);
   if (!userPayload) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
     const body = await request.json();
-    const db = getDb();
 
     if (body.current_password && body.new_password) {
-      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userPayload.userId) as {
-        id: number;
-        password_hash: string;
-      } | undefined;
-
-      if (!user || !bcrypt.compareSync(body.current_password, user.password_hash)) {
-        return NextResponse.json({ error: 'Current password is incorrect' }, { status: 400 });
+      const authUser = await getAuthUserByUsername(userPayload.username);
+      if (
+        !authUser ||
+        !(await bcrypt.compare(body.current_password, authUser.password_hash))
+      ) {
+        return NextResponse.json(
+          { error: "Current password is incorrect" },
+          { status: 400 }
+        );
       }
 
-      const newHash = bcrypt.hashSync(body.new_password, 10);
-      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, userPayload.userId);
-      return NextResponse.json({ success: true, message: 'Password updated' });
+      const newHash = await bcrypt.hash(body.new_password, 10);
+      await changeUserPassword(userPayload.userId, newHash);
+      return NextResponse.json({
+        success: true,
+        message: "Password updated",
+      });
     }
 
-    if (body.pay_cycle || body.last_paycheck_date !== undefined || body.monthly_income !== undefined || body.current_savings !== undefined || body.extra_cc_payment !== undefined) {
-      const updates: string[] = [];
-      const values: any[] = [];
+    const updatedUser = await updateUserSettings(userPayload.userId, {
+      pay_cycle: body.pay_cycle,
+      last_paycheck_date:
+        body.last_paycheck_date !== undefined ? body.last_paycheck_date : undefined,
+      monthly_income:
+        body.monthly_income !== undefined ? Number(body.monthly_income) : undefined,
+      current_savings:
+        body.current_savings !== undefined ? Number(body.current_savings) : undefined,
+      extra_cc_payment:
+        body.extra_cc_payment !== undefined ? Number(body.extra_cc_payment) : undefined,
+    });
 
-      if (body.pay_cycle) {
-        updates.push('pay_cycle = ?');
-        values.push(body.pay_cycle);
-      }
-      if (body.last_paycheck_date !== undefined) {
-        updates.push('last_paycheck_date = ?');
-        values.push(body.last_paycheck_date);
-      }
-      if (body.monthly_income !== undefined) {
-        updates.push('monthly_income = ?');
-        values.push(body.monthly_income);
-      }
-      if (body.current_savings !== undefined) {
-        updates.push('current_savings = ?');
-        values.push(body.current_savings);
-      }
-      if (body.extra_cc_payment !== undefined) {
-        updates.push('extra_cc_payment = ?');
-        values.push(body.extra_cc_payment);
-      }
-
-      values.push(userPayload.userId);
-      db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
-    }
-
-    const updatedUser = db.prepare('SELECT id, username, pay_cycle, last_paycheck_date, monthly_income, current_savings, extra_cc_payment FROM users WHERE id = ?').get(userPayload.userId);
     return NextResponse.json(updatedUser);
   } catch (error) {
-    console.error('Update settings error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error("Update settings error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
   }
 }
