@@ -113,6 +113,35 @@ impl DesktopState {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS monthly_budgets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          year INTEGER NOT NULL,
+          month INTEGER NOT NULL,
+          bills_budget REAL NOT NULL DEFAULT 0,
+          disposable_budget REAL NOT NULL DEFAULT 0,
+          savings_target REAL NOT NULL DEFAULT 0,
+          extra_debt_payment_target REAL NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (user_id, year, month)
+        );
+
+        CREATE TABLE IF NOT EXISTS monthly_closes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          year INTEGER NOT NULL,
+          month INTEGER NOT NULL,
+          bills_reviewed INTEGER NOT NULL DEFAULT 0,
+          transfers_reviewed INTEGER NOT NULL DEFAULT 0,
+          disposable_reviewed INTEGER NOT NULL DEFAULT 0,
+          credit_cards_reviewed INTEGER NOT NULL DEFAULT 0,
+          closed_at TEXT,
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (user_id, year, month)
+        );
+
         CREATE TABLE IF NOT EXISTS bill_payments (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           bill_id INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
@@ -184,6 +213,12 @@ impl DesktopState {
 
         CREATE INDEX IF NOT EXISTS idx_bills_user_active
           ON bills (user_id, active);
+
+        CREATE INDEX IF NOT EXISTS idx_monthly_budgets_user_period
+          ON monthly_budgets (user_id, year, month);
+
+        CREATE INDEX IF NOT EXISTS idx_monthly_closes_user_period
+          ON monthly_closes (user_id, year, month);
 
         CREATE INDEX IF NOT EXISTS idx_bill_payments_bill_period
           ON bill_payments (bill_id, year, month);
@@ -545,6 +580,8 @@ pub struct LegacyImportResponse {
     imported_credit_card_transactions: i64,
     imported_transfers: i64,
     imported_cash_transactions: i64,
+    imported_monthly_budgets: i64,
+    imported_monthly_closes: i64,
 }
 
 #[derive(Serialize, Clone)]
@@ -685,6 +722,61 @@ pub struct TransferResponse {
     to_account_id: i64,
     to_account_name: String,
     created_at: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct MonthlyBudgetResponse {
+    id: i64,
+    user_id: i64,
+    year: i64,
+    month: i64,
+    bills_budget: f64,
+    disposable_budget: f64,
+    savings_target: f64,
+    extra_debt_payment_target: f64,
+    created_at: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetActualsResponse {
+    bills: f64,
+    disposable: f64,
+    savings: f64,
+    extra_debt: f64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetVariancesResponse {
+    bills: f64,
+    disposable: f64,
+    savings: f64,
+    extra_debt: f64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetComparisonResponse {
+    month: String,
+    label: String,
+    year: i64,
+    month_number: i64,
+    budget: Option<MonthlyBudgetResponse>,
+    actuals: BudgetActualsResponse,
+    variances: BudgetVariancesResponse,
+    planned_total: Option<f64>,
+    actual_total: f64,
+    month_status: String,
+    closed_at: Option<String>,
+    insights: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetVsActualResponse {
+    months: i64,
+    comparisons: Vec<BudgetComparisonResponse>,
 }
 
 fn ensure_setup_not_complete(connection: &Connection) -> CommandResult<()> {
@@ -939,6 +1031,20 @@ fn map_transfer_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRespons
     })
 }
 
+fn map_monthly_budget_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MonthlyBudgetResponse> {
+    Ok(MonthlyBudgetResponse {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        year: row.get(2)?,
+        month: row.get(3)?,
+        bills_budget: row.get(4)?,
+        disposable_budget: row.get(5)?,
+        savings_target: row.get(6)?,
+        extra_debt_payment_target: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
 fn signed_amount(direction: &str, amount: f64) -> f64 {
     if direction == "inflow" {
         amount
@@ -957,6 +1063,125 @@ fn build_month_label(year: i64, month: i64) -> String {
         .copied()
         .unwrap_or("Mon");
     format!("{label} {year}")
+}
+
+fn format_currency(value: f64) -> String {
+    let whole = round_money(value).round().abs() as i64;
+    let digits = whole.to_string();
+    let len = digits.len();
+    let mut formatted = String::with_capacity(len + len / 3);
+
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (len - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+
+    if value < 0.0 {
+        format!("-${formatted}")
+    } else {
+        format!("${formatted}")
+    }
+}
+
+fn build_budget_insights(
+    comparison: &BudgetComparisonResponse,
+    previous: Option<&BudgetComparisonResponse>,
+) -> Vec<String> {
+    let mut insights = Vec::new();
+
+    if comparison.budget.is_none() {
+        insights.push(
+            "No monthly targets saved yet. Add a budget to compare this month against a plan."
+                .to_string(),
+        );
+    } else {
+        let variance_rules = [
+            (
+                "Bills",
+                comparison.variances.bills,
+                "ran over target",
+                "came in under target",
+            ),
+            (
+                "Disposable spending",
+                comparison.variances.disposable,
+                "ran over target",
+                "came in under target",
+            ),
+            (
+                "Savings",
+                comparison.variances.savings,
+                "finished ahead of target",
+                "is short of target",
+            ),
+            (
+                "Extra debt paydown",
+                comparison.variances.extra_debt,
+                "finished ahead of target",
+                "is short of target",
+            ),
+        ];
+
+        for (label, variance, over_text, under_text) in variance_rules {
+            if variance.abs() < 0.01 {
+                continue;
+            }
+
+            if variance > 0.0 {
+                insights.push(format!(
+                    "{label} {over_text} by {}.",
+                    format_currency(variance)
+                ));
+            } else {
+                insights.push(format!(
+                    "{label} {under_text} by {}.",
+                    format_currency(variance.abs())
+                ));
+            }
+        }
+    }
+
+    if let Some(previous) = previous {
+        let mut changes = vec![
+            (
+                "Bills paid",
+                comparison.actuals.bills - previous.actuals.bills,
+            ),
+            (
+                "Disposable spending",
+                comparison.actuals.disposable - previous.actuals.disposable,
+            ),
+            (
+                "Savings contributions",
+                comparison.actuals.savings - previous.actuals.savings,
+            ),
+            (
+                "Extra debt paydown",
+                comparison.actuals.extra_debt - previous.actuals.extra_debt,
+            ),
+        ];
+
+        changes.retain(|(_, delta)| delta.abs() >= 0.01);
+        changes.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
+
+        for (label, delta) in changes.into_iter().take(2) {
+            insights.push(format!(
+                "{label} moved {} by {} from {}.",
+                if delta > 0.0 { "up" } else { "down" },
+                format_currency(delta.abs()),
+                previous.label
+            ));
+        }
+    }
+
+    if insights.is_empty() {
+        insights.push("This month is tracking right on plan so far.".to_string());
+    }
+
+    insights.truncate(4);
+    insights
 }
 
 fn read_setup_required(connection: &Connection) -> CommandResult<bool> {
@@ -1558,7 +1783,10 @@ fn copy_legacy_credit_card_transactions(
     Ok(count)
 }
 
-fn copy_legacy_transfer_groups(source: &Connection, destination: &Connection) -> CommandResult<i64> {
+fn copy_legacy_transfer_groups(
+    source: &Connection,
+    destination: &Connection,
+) -> CommandResult<i64> {
     if !sqlite_table_exists(source, "transfer_groups")? {
         return Ok(0);
     }
@@ -1751,6 +1979,204 @@ fn copy_legacy_cash_transactions(
     Ok(count)
 }
 
+fn copy_legacy_monthly_budgets(
+    source: &Connection,
+    destination: &Connection,
+) -> CommandResult<i64> {
+    if !sqlite_table_exists(source, "monthly_budgets")? {
+        return Ok(0);
+    }
+
+    let mut select = source
+        .prepare(
+            "
+      SELECT
+        id,
+        user_id,
+        year,
+        month,
+        bills_budget,
+        disposable_budget,
+        savings_target,
+        extra_debt_payment_target,
+        created_at
+      FROM monthly_budgets
+      ORDER BY id
+      ",
+        )
+        .map_err(|error| format!("Failed to read legacy monthly budgets: {error}"))?;
+
+    let rows = select
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, f64>(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to map legacy monthly budgets: {error}"))?;
+
+    let mut count = 0;
+    for row in rows {
+        let (
+            id,
+            user_id,
+            year,
+            month,
+            bills_budget,
+            disposable_budget,
+            savings_target,
+            extra_debt_payment_target,
+            created_at,
+        ) = row.map_err(|error| format!("Failed to read legacy monthly budget row: {error}"))?;
+
+        destination
+            .execute(
+                "
+        INSERT INTO monthly_budgets (
+          id,
+          user_id,
+          year,
+          month,
+          bills_budget,
+          disposable_budget,
+          savings_target,
+          extra_debt_payment_target,
+          created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        ",
+                params![
+                    id,
+                    user_id,
+                    year,
+                    month,
+                    round_money(bills_budget),
+                    round_money(disposable_budget),
+                    round_money(savings_target),
+                    round_money(extra_debt_payment_target),
+                    created_at
+                ],
+            )
+            .map_err(|error| format!("Failed to import legacy monthly budget: {error}"))?;
+
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+fn copy_legacy_monthly_closes(source: &Connection, destination: &Connection) -> CommandResult<i64> {
+    if !sqlite_table_exists(source, "monthly_closes")? {
+        return Ok(0);
+    }
+
+    let mut select = source
+        .prepare(
+            "
+      SELECT
+        id,
+        user_id,
+        year,
+        month,
+        bills_reviewed,
+        transfers_reviewed,
+        disposable_reviewed,
+        credit_cards_reviewed,
+        closed_at,
+        notes,
+        created_at,
+        updated_at
+      FROM monthly_closes
+      ORDER BY id
+      ",
+        )
+        .map_err(|error| format!("Failed to read legacy monthly closes: {error}"))?;
+
+    let rows = select
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to map legacy monthly closes: {error}"))?;
+
+    let mut count = 0;
+    for row in rows {
+        let (
+            id,
+            user_id,
+            year,
+            month,
+            bills_reviewed,
+            transfers_reviewed,
+            disposable_reviewed,
+            credit_cards_reviewed,
+            closed_at,
+            notes,
+            created_at,
+            updated_at,
+        ) = row.map_err(|error| format!("Failed to read legacy monthly close row: {error}"))?;
+
+        destination
+            .execute(
+                "
+        INSERT INTO monthly_closes (
+          id,
+          user_id,
+          year,
+          month,
+          bills_reviewed,
+          transfers_reviewed,
+          disposable_reviewed,
+          credit_cards_reviewed,
+          closed_at,
+          notes,
+          created_at,
+          updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        ",
+                params![
+                    id,
+                    user_id,
+                    year,
+                    month,
+                    bills_reviewed,
+                    transfers_reviewed,
+                    disposable_reviewed,
+                    credit_cards_reviewed,
+                    closed_at,
+                    notes,
+                    created_at,
+                    updated_at
+                ],
+            )
+            .map_err(|error| format!("Failed to import legacy monthly close: {error}"))?;
+
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 fn get_bill_for_user(
     connection: &Connection,
     user_id: i64,
@@ -1860,7 +2286,9 @@ fn list_credit_card_transactions_for_user(
       ORDER BY cct.transaction_date DESC, cct.id DESC
       ",
         )
-        .map_err(|error| format!("Failed to prepare local credit card transactions query: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to prepare local credit card transactions query: {error}")
+        })?;
 
     let rows = statement
         .query_map(params![card_id, user_id], map_credit_card_transaction_row)
@@ -1994,6 +2422,262 @@ fn get_cash_transaction_for_user(
         )
         .optional()
         .map_err(|error| format!("Failed to load local cash transaction: {error}"))
+}
+
+fn get_monthly_budget_for_user(
+    connection: &Connection,
+    user_id: i64,
+    budget_id: i64,
+) -> CommandResult<Option<MonthlyBudgetResponse>> {
+    connection
+        .query_row(
+            "
+      SELECT
+        id,
+        user_id,
+        year,
+        month,
+        bills_budget,
+        disposable_budget,
+        savings_target,
+        extra_debt_payment_target,
+        created_at
+      FROM monthly_budgets
+      WHERE id = ?1
+        AND user_id = ?2
+      ",
+            params![budget_id, user_id],
+            map_monthly_budget_row,
+        )
+        .optional()
+        .map_err(|error| format!("Failed to load local monthly budget: {error}"))
+}
+
+fn load_budget_vs_actual_comparisons(
+    connection: &Connection,
+    user_id: i64,
+    normalized_months: i64,
+) -> CommandResult<Vec<BudgetComparisonResponse>> {
+    let month_offset = format!("-{} months", normalized_months.saturating_sub(1));
+    let mut statement = connection
+        .prepare(
+            "
+      WITH RECURSIVE months(month_index, month_start, month, year_number, month_number) AS (
+        SELECT
+          0,
+          date('now', 'start of month', ?1),
+          strftime('%Y-%m', date('now', 'start of month', ?1)),
+          CAST(strftime('%Y', date('now', 'start of month', ?1)) AS INTEGER),
+          CAST(strftime('%m', date('now', 'start of month', ?1)) AS INTEGER)
+        UNION ALL
+        SELECT
+          month_index + 1,
+          date(month_start, '+1 month'),
+          strftime('%Y-%m', date(month_start, '+1 month')),
+          CAST(strftime('%Y', date(month_start, '+1 month')) AS INTEGER),
+          CAST(strftime('%m', date(month_start, '+1 month')) AS INTEGER)
+        FROM months
+        WHERE month_index + 1 < ?2
+      ),
+      bill_actuals AS (
+        SELECT
+          substr(COALESCE(bp.paid_at, printf('%04d-%02d-01', bp.year, bp.month)), 1, 7) AS month,
+          COALESCE(SUM(
+            CASE
+              WHEN b.id IS NOT NULL AND bp.amount_paid IS NOT NULL THEN bp.amount_paid
+              WHEN b.id IS NOT NULL AND bp.status = 'paid' THEN b.amount
+              ELSE 0
+            END
+          ), 0) AS value
+        FROM bill_payments bp
+        INNER JOIN bills b
+          ON b.id = bp.bill_id
+         AND b.user_id = ?3
+        GROUP BY substr(COALESCE(bp.paid_at, printf('%04d-%02d-01', bp.year, bp.month)), 1, 7)
+      ),
+      disposable_actuals AS (
+        SELECT
+          substr(ct.transaction_date, 1, 7) AS month,
+          COALESCE(SUM(ct.amount), 0) AS value
+        FROM cash_transactions ct
+        WHERE ct.user_id = ?3
+          AND ct.direction = 'outflow'
+          AND ct.transaction_kind = 'discretionary_spend'
+        GROUP BY substr(ct.transaction_date, 1, 7)
+      ),
+      savings_actuals AS (
+        SELECT
+          substr(ct.transaction_date, 1, 7) AS month,
+          COALESCE(SUM(ct.amount), 0) AS value
+        FROM cash_transactions ct
+        INNER JOIN accounts a
+          ON a.id = ct.account_id
+         AND a.user_id = ?3
+         AND a.account_purpose = 'savings'
+        WHERE ct.user_id = ?3
+          AND ct.direction = 'inflow'
+        GROUP BY substr(ct.transaction_date, 1, 7)
+      ),
+      credit_card_payment_totals AS (
+        SELECT
+          m.month,
+          cc.id AS card_id,
+          COALESCE(cc.minimum_payment, 0) AS minimum_payment,
+          COALESCE(cpt.payment_total, 0) AS payment_total
+        FROM months m
+        LEFT JOIN credit_cards cc
+          ON cc.user_id = ?3
+         AND cc.active = 1
+        LEFT JOIN (
+          SELECT
+            card_id,
+            substr(transaction_date, 1, 7) AS month,
+            COALESCE(SUM(amount), 0) AS payment_total
+          FROM credit_card_transactions
+          WHERE type = 'payment'
+          GROUP BY card_id, substr(transaction_date, 1, 7)
+        ) cpt
+          ON cpt.card_id = cc.id
+         AND cpt.month = m.month
+      ),
+      credit_card_obligations AS (
+        SELECT
+          month,
+          COALESCE(SUM(min(payment_total, minimum_payment)), 0) AS minimums_paid,
+          COALESCE(SUM(max(payment_total - minimum_payment, 0)), 0) AS extra_paid
+        FROM credit_card_payment_totals
+        GROUP BY month
+      )
+      SELECT
+        m.month,
+        m.year_number,
+        m.month_number,
+        mb.id AS budget_id,
+        mb.created_at AS budget_created_at,
+        mb.bills_budget,
+        mb.disposable_budget,
+        mb.savings_target,
+        mb.extra_debt_payment_target,
+        COALESCE(ba.value, 0) + COALESCE(cco.minimums_paid, 0) AS bills_actual,
+        COALESCE(da.value, 0) AS disposable_actual,
+        COALESCE(sa.value, 0) AS savings_actual,
+        COALESCE(cco.extra_paid, 0) AS extra_debt_actual,
+        mc.closed_at
+      FROM months m
+      LEFT JOIN monthly_budgets mb
+        ON mb.user_id = ?3
+       AND mb.year = m.year_number
+       AND mb.month = m.month_number
+      LEFT JOIN bill_actuals ba
+        ON ba.month = m.month
+      LEFT JOIN disposable_actuals da
+        ON da.month = m.month
+      LEFT JOIN savings_actuals sa
+        ON sa.month = m.month
+      LEFT JOIN credit_card_obligations cco
+        ON cco.month = m.month
+      LEFT JOIN monthly_closes mc
+        ON mc.user_id = ?3
+       AND mc.year = m.year_number
+       AND mc.month = m.month_number
+      ORDER BY m.month_index
+      ",
+        )
+        .map_err(|error| format!("Failed to prepare local budget query: {error}"))?;
+
+    let rows = statement
+        .query_map(params![month_offset, normalized_months, user_id], |row| {
+            let year: i64 = row.get(1)?;
+            let month_number: i64 = row.get(2)?;
+            let budget = match row.get::<_, Option<i64>>(3)? {
+                Some(budget_id) => Some(MonthlyBudgetResponse {
+                    id: budget_id,
+                    user_id,
+                    year,
+                    month: month_number,
+                    bills_budget: round_money(row.get::<_, Option<f64>>(5)?.unwrap_or(0.0)),
+                    disposable_budget: round_money(row.get::<_, Option<f64>>(6)?.unwrap_or(0.0)),
+                    savings_target: round_money(row.get::<_, Option<f64>>(7)?.unwrap_or(0.0)),
+                    extra_debt_payment_target: round_money(
+                        row.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
+                    ),
+                    created_at: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                }),
+                None => None,
+            };
+
+            let actuals = BudgetActualsResponse {
+                bills: round_money(row.get::<_, f64>(9)?),
+                disposable: round_money(row.get::<_, f64>(10)?),
+                savings: round_money(row.get::<_, f64>(11)?),
+                extra_debt: round_money(row.get::<_, f64>(12)?),
+            };
+
+            let variances = BudgetVariancesResponse {
+                bills: round_money(
+                    actuals.bills - budget.as_ref().map_or(0.0, |value| value.bills_budget),
+                ),
+                disposable: round_money(
+                    actuals.disposable
+                        - budget.as_ref().map_or(0.0, |value| value.disposable_budget),
+                ),
+                savings: round_money(
+                    actuals.savings - budget.as_ref().map_or(0.0, |value| value.savings_target),
+                ),
+                extra_debt: round_money(
+                    actuals.extra_debt
+                        - budget
+                            .as_ref()
+                            .map_or(0.0, |value| value.extra_debt_payment_target),
+                ),
+            };
+
+            let planned_total = budget.as_ref().map(|value| {
+                round_money(
+                    value.bills_budget
+                        + value.disposable_budget
+                        + value.savings_target
+                        + value.extra_debt_payment_target,
+                )
+            });
+            let actual_total = round_money(
+                actuals.bills + actuals.disposable + actuals.savings + actuals.extra_debt,
+            );
+
+            Ok(BudgetComparisonResponse {
+                month: row.get(0)?,
+                label: build_month_label(year, month_number),
+                year,
+                month_number,
+                budget,
+                actuals,
+                variances,
+                planned_total,
+                actual_total,
+                month_status: if row.get::<_, Option<String>>(13)?.is_some() {
+                    "closed".to_string()
+                } else {
+                    "open".to_string()
+                },
+                closed_at: row.get(13)?,
+                insights: Vec::new(),
+            })
+        })
+        .map_err(|error| format!("Failed to load local budget comparisons: {error}"))?;
+
+    let comparisons = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to map local budget comparisons: {error}"))?;
+
+    let mut hydrated = Vec::with_capacity(comparisons.len());
+    for index in 0..comparisons.len() {
+        let mut comparison = comparisons[index].clone();
+        comparison.insights =
+            build_budget_insights(&comparison, index.checked_sub(1).map(|i| &comparisons[i]));
+        hydrated.push(comparison);
+    }
+
+    Ok(hydrated)
 }
 
 fn load_monthly_trend_points(
@@ -2433,6 +3117,8 @@ pub fn import_legacy_database(
         copy_legacy_credit_card_transactions(&source, &transaction)?;
     let imported_transfers = copy_legacy_transfer_groups(&source, &transaction)?;
     let imported_cash_transactions = copy_legacy_cash_transactions(&source, &transaction)?;
+    let imported_monthly_budgets = copy_legacy_monthly_budgets(&source, &transaction)?;
+    let imported_monthly_closes = copy_legacy_monthly_closes(&source, &transaction)?;
 
     transaction
         .commit()
@@ -2448,6 +3134,8 @@ pub fn import_legacy_database(
         imported_credit_card_transactions,
         imported_transfers,
         imported_cash_transactions,
+        imported_monthly_budgets,
+        imported_monthly_closes,
     })
 }
 
@@ -2710,9 +3398,7 @@ pub fn upsert_bill_payment(
 }
 
 #[tauri::command]
-pub fn list_credit_cards(
-    state: State<'_, DesktopState>,
-) -> CommandResult<Vec<CreditCardResponse>> {
+pub fn list_credit_cards(state: State<'_, DesktopState>) -> CommandResult<Vec<CreditCardResponse>> {
     let session = state.current_session()?;
     let connection = state.open_connection()?;
     let mut statement = connection
@@ -2935,7 +3621,10 @@ pub fn add_credit_card_ledger_entries(
             .trim()
             .to_string();
 
-        let raw_amount = entry.get("amount").and_then(|value| value.as_f64()).unwrap_or(0.0);
+        let raw_amount = entry
+            .get("amount")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0);
         let amount = if entry_type == "adjustment" {
             round_money(raw_amount)
         } else {
@@ -2950,7 +3639,9 @@ pub fn add_credit_card_ledger_entries(
             return Err("Enter at least one valid ledger entry".to_string());
         }
 
-        let source_account_id = entry.get("source_account_id").and_then(|value| value.as_i64());
+        let source_account_id = entry
+            .get("source_account_id")
+            .and_then(|value| value.as_i64());
         if let Some(account_id) = source_account_id {
             let account_exists = transaction
                 .query_row(
@@ -3037,7 +3728,8 @@ pub fn add_credit_card_ledger_entries(
     let connection = state.open_connection()?;
     let card = get_credit_card_for_user(&connection, session.user_id, card_id)?
         .ok_or_else(|| "Failed to load updated local credit card.".to_string())?;
-    let transactions = list_credit_card_transactions_for_user(&connection, session.user_id, card_id)?;
+    let transactions =
+        list_credit_card_transactions_for_user(&connection, session.user_id, card_id)?;
 
     Ok(CreditCardLedgerResult { card, transactions })
 }
@@ -3151,7 +3843,10 @@ pub fn create_account(
         return Err("Account name is required".to_string());
     }
 
-    if !matches!(account_type.as_str(), "checking" | "savings" | "credit_card") {
+    if !matches!(
+        account_type.as_str(),
+        "checking" | "savings" | "credit_card"
+    ) {
         return Err("Invalid account type".to_string());
     }
 
@@ -3166,7 +3861,8 @@ pub fn create_account(
         return Err("Current balance must be a valid number".to_string());
     }
 
-    if matches!(last_four.as_deref(), Some(value) if !value.is_empty() && (value.len() != 4 || !value.chars().all(|ch| ch.is_ascii_digit()))) {
+    if matches!(last_four.as_deref(), Some(value) if !value.is_empty() && (value.len() != 4 || !value.chars().all(|ch| ch.is_ascii_digit())))
+    {
         return Err("Last four must be exactly 4 digits".to_string());
     }
 
@@ -3230,7 +3926,10 @@ pub fn update_account(
         return Err("Account name is required".to_string());
     }
 
-    if !matches!(account_type.as_str(), "checking" | "savings" | "credit_card") {
+    if !matches!(
+        account_type.as_str(),
+        "checking" | "savings" | "credit_card"
+    ) {
         return Err("Invalid account type".to_string());
     }
 
@@ -3245,7 +3944,8 @@ pub fn update_account(
         return Err("Current balance must be a valid number".to_string());
     }
 
-    if matches!(last_four.as_deref(), Some(value) if !value.is_empty() && (value.len() != 4 || !value.chars().all(|ch| ch.is_ascii_digit()))) {
+    if matches!(last_four.as_deref(), Some(value) if !value.is_empty() && (value.len() != 4 || !value.chars().all(|ch| ch.is_ascii_digit())))
+    {
         return Err("Last four must be exactly 4 digits".to_string());
     }
 
@@ -3359,7 +4059,10 @@ pub fn list_cash_transactions(
         .map_err(|error| format!("Failed to prepare local cash transaction query: {error}"))?;
 
     let rows = statement
-        .query_map(params![session.user_id, safe_limit], map_cash_transaction_row)
+        .query_map(
+            params![session.user_id, safe_limit],
+            map_cash_transaction_row,
+        )
         .map_err(|error| format!("Failed to load local cash transactions: {error}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -3500,7 +4203,8 @@ pub fn update_cash_transaction(
             | "income"
             | "savings_contribution"
             | "adjustment"
-    ) || description.trim().is_empty() || transaction_date.trim().is_empty()
+    ) || description.trim().is_empty()
+        || transaction_date.trim().is_empty()
     {
         return Err("Invalid transaction payload".to_string());
     }
@@ -3716,7 +4420,9 @@ pub fn create_transfer(
                 from_account_id,
                 to_account_id,
                 round_money(amount),
-                notes.clone().and_then(|value| normalize_optional_text(&value))
+                notes
+                    .clone()
+                    .and_then(|value| normalize_optional_text(&value))
             ],
         )
         .map_err(|error| format!("Failed to create local transfer: {error}"))?;
@@ -3748,7 +4454,9 @@ pub fn create_transfer(
                 round_money(amount),
                 format!("Transfer to {}", to_account.name),
                 transfer_id,
-                notes.clone().and_then(|value| normalize_optional_text(&value))
+                notes
+                    .clone()
+                    .and_then(|value| normalize_optional_text(&value))
             ],
         )
         .map_err(|error| format!("Failed to create local source transfer entry: {error}"))?;
@@ -3778,7 +4486,9 @@ pub fn create_transfer(
                 round_money(amount),
                 format!("Transfer from {}", from_account.name),
                 transfer_id,
-                notes.clone().and_then(|value| normalize_optional_text(&value))
+                notes
+                    .clone()
+                    .and_then(|value| normalize_optional_text(&value))
             ],
         )
         .map_err(|error| format!("Failed to create local destination transfer entry: {error}"))?;
@@ -3824,6 +4534,154 @@ pub fn create_transfer(
             map_transfer_row,
         )
         .map_err(|error| format!("Failed to load local transfer: {error}"))
+}
+
+#[tauri::command]
+pub fn get_budget_vs_actual(
+    state: State<'_, DesktopState>,
+    months: Option<i64>,
+) -> CommandResult<BudgetVsActualResponse> {
+    let session = state.current_session()?;
+    let connection = state.open_connection()?;
+    let normalized_months = match months.unwrap_or(6) {
+        12 => 12,
+        _ => 6,
+    };
+
+    let comparisons =
+        load_budget_vs_actual_comparisons(&connection, session.user_id, normalized_months)?;
+
+    Ok(BudgetVsActualResponse {
+        months: normalized_months,
+        comparisons,
+    })
+}
+
+#[tauri::command]
+pub fn create_monthly_budget(
+    state: State<'_, DesktopState>,
+    year: i64,
+    month: i64,
+    bills_budget: f64,
+    disposable_budget: f64,
+    savings_target: f64,
+    extra_debt_payment_target: f64,
+) -> CommandResult<MonthlyBudgetResponse> {
+    let session = state.current_session()?;
+    let connection = state.open_connection()?;
+
+    if !(2000..=2100).contains(&year) {
+        return Err("Valid year is required".to_string());
+    }
+    if !(1..=12).contains(&month) {
+        return Err("Valid month is required".to_string());
+    }
+    if !bills_budget.is_finite() || bills_budget < 0.0 {
+        return Err("Bills budget must be a valid non-negative number".to_string());
+    }
+    if !disposable_budget.is_finite() || disposable_budget < 0.0 {
+        return Err("Disposable budget must be a valid non-negative number".to_string());
+    }
+    if !savings_target.is_finite() || savings_target < 0.0 {
+        return Err("Savings target must be a valid non-negative number".to_string());
+    }
+    if !extra_debt_payment_target.is_finite() || extra_debt_payment_target < 0.0 {
+        return Err("Extra debt payment target must be a valid non-negative number".to_string());
+    }
+
+    match connection.execute(
+        "
+      INSERT INTO monthly_budgets (
+        user_id,
+        year,
+        month,
+        bills_budget,
+        disposable_budget,
+        savings_target,
+        extra_debt_payment_target
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      ",
+        params![
+            session.user_id,
+            year,
+            month,
+            round_money(bills_budget),
+            round_money(disposable_budget),
+            round_money(savings_target),
+            round_money(extra_debt_payment_target)
+        ],
+    ) {
+        Ok(_) => {}
+        Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
+        {
+            return Err("A budget for that month already exists".to_string());
+        }
+        Err(error) => {
+            return Err(format!("Failed to create local monthly budget: {error}"));
+        }
+    }
+
+    let budget_id = connection.last_insert_rowid();
+    get_monthly_budget_for_user(&connection, session.user_id, budget_id)?
+        .ok_or_else(|| "Failed to load newly created local monthly budget.".to_string())
+}
+
+#[tauri::command]
+pub fn update_monthly_budget(
+    state: State<'_, DesktopState>,
+    budget_id: i64,
+    bills_budget: f64,
+    disposable_budget: f64,
+    savings_target: f64,
+    extra_debt_payment_target: f64,
+) -> CommandResult<MonthlyBudgetResponse> {
+    let session = state.current_session()?;
+    let connection = state.open_connection()?;
+
+    if !bills_budget.is_finite() || bills_budget < 0.0 {
+        return Err("Bills budget must be a valid non-negative number".to_string());
+    }
+    if !disposable_budget.is_finite() || disposable_budget < 0.0 {
+        return Err("Disposable budget must be a valid non-negative number".to_string());
+    }
+    if !savings_target.is_finite() || savings_target < 0.0 {
+        return Err("Savings target must be a valid non-negative number".to_string());
+    }
+    if !extra_debt_payment_target.is_finite() || extra_debt_payment_target < 0.0 {
+        return Err("Extra debt payment target must be a valid non-negative number".to_string());
+    }
+
+    let updated = connection
+        .execute(
+            "
+      UPDATE monthly_budgets
+      SET
+        bills_budget = ?1,
+        disposable_budget = ?2,
+        savings_target = ?3,
+        extra_debt_payment_target = ?4
+      WHERE id = ?5
+        AND user_id = ?6
+      ",
+            params![
+                round_money(bills_budget),
+                round_money(disposable_budget),
+                round_money(savings_target),
+                round_money(extra_debt_payment_target),
+                budget_id,
+                session.user_id
+            ],
+        )
+        .map_err(|error| format!("Failed to update local monthly budget: {error}"))?;
+
+    if updated == 0 {
+        return Err("Budget not found".to_string());
+    }
+
+    get_monthly_budget_for_user(&connection, session.user_id, budget_id)?
+        .ok_or_else(|| "Failed to load updated local monthly budget.".to_string())
 }
 
 #[tauri::command]
@@ -3985,13 +4843,15 @@ pub fn get_monthly_trends(
         .zip(disposable_spending_by_month.iter())
         .zip(savings_contributions_by_month.iter())
         .zip(credit_card_payments_by_month.iter())
-        .map(|(((bills, disposable), savings), cc_payments)| TrendPointResponse {
-            month: bills.month.clone(),
-            label: bills.label.clone(),
-            value: round_money(
-                bills.value + disposable.value + savings.value + cc_payments.value,
-            ),
-        })
+        .map(
+            |(((bills, disposable), savings), cc_payments)| TrendPointResponse {
+                month: bills.month.clone(),
+                label: bills.label.clone(),
+                value: round_money(
+                    bills.value + disposable.value + savings.value + cc_payments.value,
+                ),
+            },
+        )
         .collect();
 
     Ok(TrendsResponse {

@@ -1,48 +1,15 @@
 'use client';
 
-import { apiPath } from '@/lib/basepath';
 import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
-
-type Budget = {
-  id: number;
-  year: number;
-  month: number;
-  bills_budget: number;
-  disposable_budget: number;
-  savings_target: number;
-  extra_debt_payment_target: number;
-};
-
-type Comparison = {
-  month: string;
-  label: string;
-  year: number;
-  monthNumber: number;
-  budget: Budget | null;
-  actuals: {
-    bills: number;
-    disposable: number;
-    savings: number;
-    extraDebt: number;
-  };
-  variances: {
-    bills: number;
-    disposable: number;
-    savings: number;
-    extraDebt: number;
-  };
-  plannedTotal: number | null;
-  actualTotal: number;
-  monthStatus: 'open' | 'closed';
-  closedAt: string | null;
-  insights: string[];
-};
-
-type BudgetVsActualResponse = {
-  months: number;
-  comparisons: Comparison[];
-};
+import { getErrorMessage } from '@/lib/client/errors';
+import {
+  getBudgetVsActual,
+  saveMonthlyBudget,
+  type BudgetComparison,
+  type BudgetVsActualResponse,
+} from '@/lib/client/budget-client';
+import { useProtectedRoute } from '@/lib/client/use-protected-route';
 
 type MetricKey = 'bills' | 'disposable' | 'savings' | 'extraDebt';
 
@@ -73,7 +40,7 @@ const metricCards = [
     title: 'Extra Debt Paydown',
     accentClass: 'text-cyan-300',
     panelClass: 'border-cyan-500/20 bg-cyan-500/10',
-    helper: 'Credit-card payments above each card\'s minimum payment.',
+    helper: "Credit-card payments above each card's minimum payment.",
   },
 ];
 
@@ -113,7 +80,7 @@ function varianceText(metric: MetricKey, variance: number) {
   };
 }
 
-function targetAmount(comparison: Comparison, metric: MetricKey) {
+function targetAmount(comparison: BudgetComparison, metric: MetricKey) {
   if (!comparison.budget) {
     return null;
   }
@@ -124,21 +91,21 @@ function targetAmount(comparison: Comparison, metric: MetricKey) {
   return comparison.budget.extra_debt_payment_target;
 }
 
-function actualAmount(comparison: Comparison, metric: MetricKey) {
+function actualAmount(comparison: BudgetComparison, metric: MetricKey) {
   if (metric === 'bills') return comparison.actuals.bills;
   if (metric === 'disposable') return comparison.actuals.disposable;
   if (metric === 'savings') return comparison.actuals.savings;
   return comparison.actuals.extraDebt;
 }
 
-function varianceAmount(comparison: Comparison, metric: MetricKey) {
+function varianceAmount(comparison: BudgetComparison, metric: MetricKey) {
   if (metric === 'bills') return comparison.variances.bills;
   if (metric === 'disposable') return comparison.variances.disposable;
   if (metric === 'savings') return comparison.variances.savings;
   return comparison.variances.extraDebt;
 }
 
-function metricProgress(comparison: Comparison, metric: MetricKey) {
+function metricProgress(comparison: BudgetComparison, metric: MetricKey) {
   const target = targetAmount(comparison, metric);
   if (target === null) {
     return null;
@@ -151,7 +118,7 @@ function metricProgress(comparison: Comparison, metric: MetricKey) {
   return Math.max(0, Math.min(100, (actualAmount(comparison, metric) / target) * 100));
 }
 
-function historyBadge(comparison: Comparison) {
+function historyBadge(comparison: BudgetComparison) {
   if (!comparison.budget) {
     return {
       label: 'No budget',
@@ -184,7 +151,7 @@ function historyBadge(comparison: Comparison) {
   };
 }
 
-function reviewBadge(comparison: Comparison) {
+function reviewBadge(comparison: BudgetComparison) {
   if (comparison.monthStatus === 'closed') {
     return {
       label: 'Closed',
@@ -199,8 +166,8 @@ function reviewBadge(comparison: Comparison) {
 }
 
 function fieldValue(
-  comparison: Comparison | null | undefined,
-  key: keyof NonNullable<Comparison['budget']>
+  comparison: BudgetComparison | null | undefined,
+  key: keyof NonNullable<BudgetComparison['budget']>
 ) {
   if (!comparison?.budget) {
     return '';
@@ -211,6 +178,7 @@ function fieldValue(
 }
 
 export default function BudgetPage() {
+  const { checkingAuth, authError } = useProtectedRoute();
   const [months, setMonths] = useState<6 | 12>(6);
   const [data, setData] = useState<BudgetVsActualResponse | null>(null);
   const [selectedMonth, setSelectedMonth] = useState('');
@@ -232,19 +200,14 @@ export default function BudgetPage() {
       setError('');
 
       try {
-        const response = await fetch(apiPath(`/api/budget-vs-actual?months=${months}`));
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.error || 'Failed to load budget view.');
-        }
-
+        const payload = await getBudgetVsActual(months);
         if (cancelled) {
           return;
         }
 
         setData(payload);
         setSelectedMonth((current) => {
-          if (payload.comparisons.some((comparison: Comparison) => comparison.month === current)) {
+          if (payload.comparisons.some((comparison) => comparison.month === current)) {
             return current;
           }
 
@@ -252,11 +215,7 @@ export default function BudgetPage() {
         });
       } catch (fetchError) {
         if (!cancelled) {
-          setError(
-            fetchError instanceof Error
-              ? fetchError.message
-              : 'Failed to load budget view.'
-          );
+          setError(getErrorMessage(fetchError, 'Failed to load budget view.'));
         }
       } finally {
         if (!cancelled) {
@@ -265,19 +224,23 @@ export default function BudgetPage() {
       }
     }
 
-    loadBudgetView();
+    if (!checkingAuth && !authError) {
+      void loadBudgetView();
+    }
+
     return () => {
       cancelled = true;
     };
-  }, [months]);
+  }, [authError, checkingAuth, months]);
 
   const selectedComparison =
     data?.comparisons.find((comparison) => comparison.month === selectedMonth) ??
     data?.comparisons.at(-1) ??
     null;
-  const selectedIndex = data?.comparisons.findIndex(
-    (comparison) => comparison.month === selectedComparison?.month
-  ) ?? -1;
+  const selectedIndex =
+    data?.comparisons.findIndex(
+      (comparison) => comparison.month === selectedComparison?.month
+    ) ?? -1;
   const previousBudgetComparison =
     selectedIndex > 0
       ? [...(data?.comparisons.slice(0, selectedIndex) ?? [])]
@@ -309,16 +272,11 @@ export default function BudgetPage() {
   }, [selectedComparison]);
 
   async function refreshBudgetView(preferredMonth?: string) {
-    const response = await fetch(apiPath(`/api/budget-vs-actual?months=${months}`));
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload?.error || 'Failed to refresh budget view.');
-    }
-
+    const payload = await getBudgetVsActual(months);
     setData(payload);
     setSelectedMonth((current) => {
       const next = preferredMonth ?? current;
-      if (payload.comparisons.some((comparison: Comparison) => comparison.month === next)) {
+      if (payload.comparisons.some((comparison) => comparison.month === next)) {
         return next;
       }
 
@@ -345,27 +303,10 @@ export default function BudgetPage() {
         extra_debt_payment_target: parseFloat(form.extra_debt_payment_target || '0'),
       };
 
-      const response = await fetch(
-        selectedComparison.budget
-          ? apiPath(`/api/monthly-budgets/${selectedComparison.budget.id}`)
-          : apiPath('/api/monthly-budgets'),
-        {
-          method: selectedComparison.budget ? 'PUT' : 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      );
-
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.error || 'Failed to save budget.');
-      }
-
+      await saveMonthlyBudget(body, selectedComparison.budget?.id);
       await refreshBudgetView(selectedComparison.month);
     } catch (saveError) {
-      setError(
-        saveError instanceof Error ? saveError.message : 'Failed to save budget.'
-      );
+      setError(getErrorMessage(saveError, 'Failed to save budget.'));
     } finally {
       setSaving(false);
     }
@@ -395,7 +336,8 @@ export default function BudgetPage() {
             <div>
               <h1 className="text-2xl font-bold text-white">Budget vs Actual</h1>
               <p className="mt-1 text-gray-400">
-                Set monthly targets, compare them to actual outcomes, and spot where the month drifted.
+                Set monthly targets, compare them to actual outcomes, and spot where the
+                month drifted.
               </p>
             </div>
             <div className="inline-flex rounded-lg border border-gray-800 bg-gray-900 p-1">
@@ -416,15 +358,15 @@ export default function BudgetPage() {
             </div>
           </div>
 
-          {error ? (
+          {authError || error ? (
             <div className="mb-6 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300">
-              {error}
+              {authError || error}
             </div>
           ) : null}
 
-          {loading || !data ? (
+          {checkingAuth || loading || !data ? (
             <div className="rounded-xl border border-gray-800 bg-gray-900 p-10 text-center text-gray-400">
-              Loading budget view...
+              {checkingAuth ? 'Checking session...' : 'Loading budget view...'}
             </div>
           ) : (
             <>
@@ -437,7 +379,8 @@ export default function BudgetPage() {
                     </p>
                   </div>
                   <p className="text-xs text-gray-500">
-                    {data.comparisons.length} month{data.comparisons.length === 1 ? '' : 's'} loaded
+                    {data.comparisons.length} month{data.comparisons.length === 1 ? '' : 's'}{' '}
+                    loaded
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -454,7 +397,8 @@ export default function BudgetPage() {
                     >
                       <div className="font-medium">{comparison.label}</div>
                       <div className="mt-1 text-xs">
-                        {comparison.budget ? 'Budget saved' : 'No target yet'} / {comparison.monthStatus === 'closed' ? 'Closed' : 'Open'}
+                        {comparison.budget ? 'Budget saved' : 'No target yet'} /{' '}
+                        {comparison.monthStatus === 'closed' ? 'Closed' : 'Open'}
                       </div>
                     </button>
                   ))}
@@ -478,7 +422,9 @@ export default function BudgetPage() {
                           </p>
                         </div>
                         <span className="rounded-full bg-gray-800 px-3 py-1 text-xs text-gray-400">
-                          {selectedComparison.budget ? 'Updating existing budget' : 'Creating new budget'}
+                          {selectedComparison.budget
+                            ? 'Updating existing budget'
+                            : 'Creating new budget'}
                         </span>
                       </div>
 
@@ -489,7 +435,8 @@ export default function BudgetPage() {
                               Start from {previousBudgetComparison.label}
                             </p>
                             <p className="mt-1 text-xs text-gray-500">
-                              Pull forward the last saved target set, then adjust what changed.
+                              Pull forward the last saved target set, then adjust what
+                              changed.
                             </p>
                           </div>
                           <button
@@ -525,7 +472,9 @@ export default function BudgetPage() {
                         </label>
 
                         <label className="space-y-1.5">
-                          <span className="text-sm font-medium text-gray-300">Disposable Budget</span>
+                          <span className="text-sm font-medium text-gray-300">
+                            Disposable Budget
+                          </span>
                           <input
                             type="number"
                             min="0"
@@ -546,7 +495,9 @@ export default function BudgetPage() {
                         </label>
 
                         <label className="space-y-1.5">
-                          <span className="text-sm font-medium text-gray-300">Savings Target</span>
+                          <span className="text-sm font-medium text-gray-300">
+                            Savings Target
+                          </span>
                           <input
                             type="number"
                             min="0"
@@ -595,7 +546,11 @@ export default function BudgetPage() {
                         disabled={saving}
                         className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-60"
                       >
-                        {saving ? 'Saving...' : selectedComparison.budget ? 'Save Targets' : 'Create Targets'}
+                        {saving
+                          ? 'Saving...'
+                          : selectedComparison.budget
+                            ? 'Save Targets'
+                            : 'Create Targets'}
                       </button>
                     </form>
 
@@ -608,7 +563,9 @@ export default function BudgetPage() {
                       <div className="mt-4 rounded-xl border border-gray-800 bg-gradient-to-r from-slate-900 via-gray-900 to-slate-950 p-4">
                         <div className="flex items-center justify-between gap-4">
                           <div>
-                            <p className="text-xs uppercase tracking-wide text-gray-500">Budget Health</p>
+                            <p className="text-xs uppercase tracking-wide text-gray-500">
+                              Budget Health
+                            </p>
                             <p className="mt-2 text-xl font-semibold text-white">
                               {selectedComparison.budget
                                 ? `${metricStatusCount} of ${metricCards.length} areas on track`
@@ -633,7 +590,9 @@ export default function BudgetPage() {
                       <div className="mt-5 grid gap-4 md:grid-cols-2">
                         <div className="rounded-lg border border-gray-800 bg-gray-800/30 p-4">
                           <div className="flex items-center justify-between gap-3">
-                            <p className="text-xs uppercase tracking-wide text-gray-500">Review Status</p>
+                            <p className="text-xs uppercase tracking-wide text-gray-500">
+                              Review Status
+                            </p>
                             {currentReviewBadge ? (
                               <span
                                 className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${currentReviewBadge.className}`}
@@ -643,7 +602,9 @@ export default function BudgetPage() {
                             ) : null}
                           </div>
                           <p className="mt-2 text-2xl font-bold text-white">
-                            {selectedComparison.monthStatus === 'closed' ? 'Trusted Month' : 'Still Open'}
+                            {selectedComparison.monthStatus === 'closed'
+                              ? 'Trusted Month'
+                              : 'Still Open'}
                           </p>
                           <p className="mt-1 text-xs text-gray-500">
                             {selectedComparison.closedAt
@@ -656,7 +617,9 @@ export default function BudgetPage() {
                           </p>
                         </div>
                         <div className="rounded-lg border border-gray-800 bg-gray-800/30 p-4">
-                          <p className="text-xs uppercase tracking-wide text-gray-500">Planned Total</p>
+                          <p className="text-xs uppercase tracking-wide text-gray-500">
+                            Planned Total
+                          </p>
                           <p className="mt-2 text-2xl font-bold text-white">
                             {selectedComparison.plannedTotal === null
                               ? 'No budget set'
@@ -669,7 +632,9 @@ export default function BudgetPage() {
                       </div>
 
                       <div className="mt-4 rounded-lg border border-gray-800 bg-gray-800/30 p-4">
-                        <p className="text-xs uppercase tracking-wide text-gray-500">Actual Total</p>
+                        <p className="text-xs uppercase tracking-wide text-gray-500">
+                          Actual Total
+                        </p>
                         <p className="mt-2 text-2xl font-bold text-cyan-300">
                           {formatCurrency(selectedComparison.actualTotal)}
                         </p>
@@ -725,10 +690,14 @@ export default function BudgetPage() {
                             {formatCurrency(actual)}
                           </p>
                           <p className="mt-1 text-sm text-gray-400">
-                            {target === null ? 'No target set yet' : `Target ${formatCurrency(target)}`}
+                            {target === null
+                              ? 'No target set yet'
+                              : `Target ${formatCurrency(target)}`}
                           </p>
                           <p className={`mt-3 text-sm font-medium ${varianceState.className}`}>
-                            {target === null ? 'Save a target to see variance' : varianceState.label}
+                            {target === null
+                              ? 'Save a target to see variance'
+                              : varianceState.label}
                           </p>
                           <div className="mt-3 h-2 overflow-hidden rounded-full bg-gray-800/80">
                             <div
@@ -785,7 +754,9 @@ export default function BudgetPage() {
                     </section>
 
                     <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
-                      <h2 className="text-base font-semibold text-white">What Changed This Month</h2>
+                      <h2 className="text-base font-semibold text-white">
+                        What Changed This Month
+                      </h2>
                       <p className="mt-1 text-xs text-gray-500">
                         A quick read on the biggest shifts and gaps.
                       </p>
@@ -805,9 +776,12 @@ export default function BudgetPage() {
                   <section className="mt-6 rounded-xl border border-gray-800 bg-gray-900 p-5">
                     <div className="mb-4 flex items-center justify-between gap-4">
                       <div>
-                        <h2 className="text-base font-semibold text-white">Recent Month History</h2>
+                        <h2 className="text-base font-semibold text-white">
+                          Recent Month History
+                        </h2>
                         <p className="mt-1 text-xs text-gray-500">
-                          A compact look across the loaded window so you can spot drift month to month.
+                          A compact look across the loaded window so you can spot drift month
+                          to month.
                         </p>
                       </div>
                       <p className="text-xs text-gray-500">{months}-month planning window</p>

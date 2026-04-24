@@ -55,6 +55,9 @@ pub fn run() {
             commands::delete_cash_transaction,
             commands::list_transfers,
             commands::create_transfer,
+            commands::get_budget_vs_actual,
+            commands::create_monthly_budget,
+            commands::update_monthly_budget,
             commands::get_monthly_trends
         ])
         .run(tauri::generate_context!())
