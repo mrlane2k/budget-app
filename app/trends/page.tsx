@@ -1,25 +1,10 @@
 'use client';
 
-import { apiPath } from '@/lib/basepath';
 import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
-
-type TrendPoint = {
-  month: string;
-  label: string;
-  value: number;
-};
-
-type TrendsResponse = {
-  months: number;
-  billsPaidByMonth: TrendPoint[];
-  disposableSpendingByMonth: TrendPoint[];
-  savingsContributionsByMonth: TrendPoint[];
-  creditCardPurchasesByMonth: TrendPoint[];
-  creditCardPaymentsByMonth: TrendPoint[];
-  creditCardInterestByMonth: TrendPoint[];
-  netOutflowByMonth: TrendPoint[];
-};
+import { getErrorMessage } from '@/lib/client/errors';
+import { getMonthlyTrends, type TrendPoint, type TrendsResponse } from '@/lib/client/trends-client';
+import { useProtectedRoute } from '@/lib/client/use-protected-route';
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat('en-US', {
@@ -131,6 +116,7 @@ function TrendBars({
 }
 
 export default function TrendsPage() {
+  const { checkingAuth, authError } = useProtectedRoute();
   const [months, setMonths] = useState<6 | 12>(6);
   const [data, setData] = useState<TrendsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -144,20 +130,13 @@ export default function TrendsPage() {
       setError('');
 
       try {
-        const response = await fetch(apiPath(`/api/trends?months=${months}`));
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.error || 'Failed to load trends.');
-        }
-
+        const payload = await getMonthlyTrends(months);
         if (!cancelled) {
           setData(payload);
         }
       } catch (fetchError) {
         if (!cancelled) {
-          setError(
-            fetchError instanceof Error ? fetchError.message : 'Failed to load trends.'
-          );
+          setError(getErrorMessage(fetchError, 'Failed to load trends.'));
         }
       } finally {
         if (!cancelled) {
@@ -166,11 +145,14 @@ export default function TrendsPage() {
       }
     }
 
-    loadTrends();
+    if (!checkingAuth && !authError) {
+      void loadTrends();
+    }
+
     return () => {
       cancelled = true;
     };
-  }, [months]);
+  }, [authError, checkingAuth, months]);
 
   return (
     <div className="flex min-h-screen">
@@ -202,15 +184,15 @@ export default function TrendsPage() {
             </div>
           </div>
 
-          {error ? (
+          {authError || error ? (
             <div className="mb-6 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300">
-              {error}
+              {authError || error}
             </div>
           ) : null}
 
-          {loading || !data ? (
+          {checkingAuth || loading || !data ? (
             <div className="rounded-xl border border-gray-800 bg-gray-900 p-10 text-center text-gray-400">
-              Loading trends...
+              {checkingAuth ? 'Checking session...' : 'Loading trends...'}
             </div>
           ) : (
             <>

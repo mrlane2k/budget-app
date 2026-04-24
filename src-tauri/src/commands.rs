@@ -618,6 +618,26 @@ pub struct CreditCardPaymentSummaryItem {
 }
 
 #[derive(Serialize, Clone)]
+pub struct TrendPointResponse {
+    month: String,
+    label: String,
+    value: f64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendsResponse {
+    months: i64,
+    bills_paid_by_month: Vec<TrendPointResponse>,
+    disposable_spending_by_month: Vec<TrendPointResponse>,
+    savings_contributions_by_month: Vec<TrendPointResponse>,
+    credit_card_purchases_by_month: Vec<TrendPointResponse>,
+    credit_card_payments_by_month: Vec<TrendPointResponse>,
+    credit_card_interest_by_month: Vec<TrendPointResponse>,
+    net_outflow_by_month: Vec<TrendPointResponse>,
+}
+
+#[derive(Serialize, Clone)]
 pub struct AccountResponse {
     id: i64,
     user_id: i64,
@@ -925,6 +945,18 @@ fn signed_amount(direction: &str, amount: f64) -> f64 {
     } else {
         -amount
     }
+}
+
+fn build_month_label(year: i64, month: i64) -> String {
+    const MONTH_NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    let label = MONTH_NAMES
+        .get(month.saturating_sub(1) as usize)
+        .copied()
+        .unwrap_or("Mon");
+    format!("{label} {year}")
 }
 
 fn read_setup_required(connection: &Connection) -> CommandResult<bool> {
@@ -1962,6 +1994,59 @@ fn get_cash_transaction_for_user(
         )
         .optional()
         .map_err(|error| format!("Failed to load local cash transaction: {error}"))
+}
+
+fn load_monthly_trend_points(
+    connection: &Connection,
+    user_id: i64,
+    normalized_months: i64,
+    aggregate_sql: &str,
+) -> CommandResult<Vec<TrendPointResponse>> {
+    let month_offset = format!("-{} months", normalized_months.saturating_sub(1));
+    let query = format!(
+        "
+      WITH RECURSIVE months(month_index, month_start, month, year_number, month_number) AS (
+        SELECT
+          0,
+          date('now', 'start of month', ?1),
+          strftime('%Y-%m', date('now', 'start of month', ?1)),
+          CAST(strftime('%Y', date('now', 'start of month', ?1)) AS INTEGER),
+          CAST(strftime('%m', date('now', 'start of month', ?1)) AS INTEGER)
+        UNION ALL
+        SELECT
+          month_index + 1,
+          date(month_start, '+1 month'),
+          strftime('%Y-%m', date(month_start, '+1 month')),
+          CAST(strftime('%Y', date(month_start, '+1 month')) AS INTEGER),
+          CAST(strftime('%m', date(month_start, '+1 month')) AS INTEGER)
+        FROM months
+        WHERE month_index + 1 < ?2
+      )
+      {aggregate_sql}
+      "
+    );
+
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(|error| format!("Failed to prepare local trends query: {error}"))?;
+
+    let rows = statement
+        .query_map(params![month_offset, normalized_months, user_id], |row| {
+            let month: String = row.get(0)?;
+            let year_number: i64 = row.get(1)?;
+            let month_number: i64 = row.get(2)?;
+            let value: f64 = row.get(3)?;
+
+            Ok(TrendPointResponse {
+                month,
+                label: build_month_label(year_number, month_number),
+                value: round_money(value),
+            })
+        })
+        .map_err(|error| format!("Failed to load local trends: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to map local trends: {error}"))
 }
 
 #[tauri::command]
@@ -3739,4 +3824,184 @@ pub fn create_transfer(
             map_transfer_row,
         )
         .map_err(|error| format!("Failed to load local transfer: {error}"))
+}
+
+#[tauri::command]
+pub fn get_monthly_trends(
+    state: State<'_, DesktopState>,
+    months: Option<i64>,
+) -> CommandResult<TrendsResponse> {
+    let session = state.current_session()?;
+    let connection = state.open_connection()?;
+    let normalized_months = match months.unwrap_or(6) {
+        12 => 12,
+        _ => 6,
+    };
+
+    let bills_paid_by_month = load_monthly_trend_points(
+        &connection,
+        session.user_id,
+        normalized_months,
+        "
+      SELECT
+        m.month,
+        m.year_number,
+        m.month_number,
+        COALESCE(SUM(
+          CASE
+            WHEN b.id IS NOT NULL AND bp.amount_paid IS NOT NULL THEN bp.amount_paid
+            WHEN b.id IS NOT NULL AND bp.status = 'paid' THEN b.amount
+            ELSE 0
+          END
+        ), 0) AS value
+      FROM months m
+      LEFT JOIN bill_payments bp
+        ON substr(COALESCE(bp.paid_at, printf('%04d-%02d-01', bp.year, bp.month)), 1, 7) = m.month
+      LEFT JOIN bills b
+        ON b.id = bp.bill_id
+       AND b.user_id = ?3
+      GROUP BY m.month_index, m.month, m.year_number, m.month_number
+      ORDER BY m.month_index
+      ",
+    )?;
+
+    let disposable_spending_by_month = load_monthly_trend_points(
+        &connection,
+        session.user_id,
+        normalized_months,
+        "
+      SELECT
+        m.month,
+        m.year_number,
+        m.month_number,
+        COALESCE(SUM(ct.amount), 0) AS value
+      FROM months m
+      LEFT JOIN cash_transactions ct
+        ON substr(ct.transaction_date, 1, 7) = m.month
+       AND ct.user_id = ?3
+       AND ct.direction = 'outflow'
+       AND ct.transaction_kind = 'discretionary_spend'
+      GROUP BY m.month_index, m.month, m.year_number, m.month_number
+      ORDER BY m.month_index
+      ",
+    )?;
+
+    let savings_contributions_by_month = load_monthly_trend_points(
+        &connection,
+        session.user_id,
+        normalized_months,
+        "
+      SELECT
+        m.month,
+        m.year_number,
+        m.month_number,
+        COALESCE(SUM(ct.amount), 0) AS value
+      FROM months m
+      LEFT JOIN cash_transactions ct
+        ON substr(ct.transaction_date, 1, 7) = m.month
+       AND ct.user_id = ?3
+       AND ct.direction = 'inflow'
+      LEFT JOIN accounts a
+        ON a.id = ct.account_id
+       AND a.user_id = ?3
+       AND a.account_purpose = 'savings'
+      WHERE a.id IS NOT NULL OR ct.id IS NULL
+      GROUP BY m.month_index, m.month, m.year_number, m.month_number
+      ORDER BY m.month_index
+      ",
+    )?;
+
+    let credit_card_purchases_by_month = load_monthly_trend_points(
+        &connection,
+        session.user_id,
+        normalized_months,
+        "
+      SELECT
+        m.month,
+        m.year_number,
+        m.month_number,
+        COALESCE(SUM(cct.amount), 0) AS value
+      FROM months m
+      LEFT JOIN credit_card_transactions cct
+        ON substr(cct.transaction_date, 1, 7) = m.month
+       AND cct.type = 'purchase'
+      LEFT JOIN credit_cards cc
+        ON cc.id = cct.card_id
+       AND cc.user_id = ?3
+      WHERE cc.id IS NOT NULL OR cct.id IS NULL
+      GROUP BY m.month_index, m.month, m.year_number, m.month_number
+      ORDER BY m.month_index
+      ",
+    )?;
+
+    let credit_card_payments_by_month = load_monthly_trend_points(
+        &connection,
+        session.user_id,
+        normalized_months,
+        "
+      SELECT
+        m.month,
+        m.year_number,
+        m.month_number,
+        COALESCE(SUM(cct.amount), 0) AS value
+      FROM months m
+      LEFT JOIN credit_card_transactions cct
+        ON substr(cct.transaction_date, 1, 7) = m.month
+       AND cct.type = 'payment'
+      LEFT JOIN credit_cards cc
+        ON cc.id = cct.card_id
+       AND cc.user_id = ?3
+      WHERE cc.id IS NOT NULL OR cct.id IS NULL
+      GROUP BY m.month_index, m.month, m.year_number, m.month_number
+      ORDER BY m.month_index
+      ",
+    )?;
+
+    let credit_card_interest_by_month = load_monthly_trend_points(
+        &connection,
+        session.user_id,
+        normalized_months,
+        "
+      SELECT
+        m.month,
+        m.year_number,
+        m.month_number,
+        COALESCE(SUM(cct.amount), 0) AS value
+      FROM months m
+      LEFT JOIN credit_card_transactions cct
+        ON substr(cct.transaction_date, 1, 7) = m.month
+       AND cct.type = 'interest'
+      LEFT JOIN credit_cards cc
+        ON cc.id = cct.card_id
+       AND cc.user_id = ?3
+      WHERE cc.id IS NOT NULL OR cct.id IS NULL
+      GROUP BY m.month_index, m.month, m.year_number, m.month_number
+      ORDER BY m.month_index
+      ",
+    )?;
+
+    let net_outflow_by_month = bills_paid_by_month
+        .iter()
+        .zip(disposable_spending_by_month.iter())
+        .zip(savings_contributions_by_month.iter())
+        .zip(credit_card_payments_by_month.iter())
+        .map(|(((bills, disposable), savings), cc_payments)| TrendPointResponse {
+            month: bills.month.clone(),
+            label: bills.label.clone(),
+            value: round_money(
+                bills.value + disposable.value + savings.value + cc_payments.value,
+            ),
+        })
+        .collect();
+
+    Ok(TrendsResponse {
+        months: normalized_months,
+        bills_paid_by_month,
+        disposable_spending_by_month,
+        savings_contributions_by_month,
+        credit_card_purchases_by_month,
+        credit_card_payments_by_month,
+        credit_card_interest_by_month,
+        net_outflow_by_month,
+    })
 }
