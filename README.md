@@ -70,8 +70,8 @@ GitHub Releases for desktop builds are handled by [`.github/workflows/release-de
 - or run the workflow manually from GitHub Actions and provide the tag name
 - the workflow publishes the release once all platform bundles finish successfully
 - bundle targets are platform-specific:
-  - macOS: `.app`
-  - Windows: `.msi` and NSIS installer
+  - macOS: `.dmg` plus an updater archive
+  - Windows: NSIS installer
   - Linux: `.deb` and `.AppImage`
 
 Code-signing and updater secrets can be layered on later. The checked-in workflow already passes `TAURI_PRIVATE_KEY` and `TAURI_KEY_PASSWORD` through if you add them as repository secrets.
