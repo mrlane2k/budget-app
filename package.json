@@ -9,6 +9,7 @@
     "build:desktop:web": "next build --webpack && node scripts/prepare-tauri-dist.mjs",
     "start": "next start",
     "lint": "eslint",
+    "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
     "desktop:info": "tauri info"
