@@ -332,7 +332,7 @@ export default function DashboardPage() {
               <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
                 <h2 className="text-lg font-semibold text-white">What’s Next</h2>
                 <p className="mt-2 text-sm text-gray-400">
-                  Reporting and month-end views are the biggest remaining hosted-era slices.
+                  The core budgeting, reporting, and month-end flows now run locally. The next cleanup work is mostly polish, exports, and desktop-native refinement.
                 </p>
                 <div className="mt-4 space-y-3">
                   <Link
@@ -348,10 +348,10 @@ export default function DashboardPage() {
                     Open Credit Cards
                   </Link>
                   <Link
-                    href="/settings"
+                    href="/calendar"
                     className="block rounded-lg border border-gray-800 bg-gray-950/40 px-4 py-3 text-sm text-gray-200 transition-colors hover:bg-gray-800"
                   >
-                    Review Vault Settings
+                    Review Monthly Close
                   </Link>
                 </div>
               </div>

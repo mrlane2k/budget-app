@@ -1,5 +1,7 @@
 # Phase 2: Trends and Spending Visibility
 
+Status: completed in the desktop app.
+
 ## Goal
 
 Show month-over-month trends for the spending patterns that matter:
@@ -48,11 +50,11 @@ Optional new fields:
 - `merchant_name`
 - `source_account_id`
 
-## API Work
+## Runtime Work
 
 Add:
 
-- `GET /api/trends`
+- desktop-native `get_monthly_trends` command
 
 Suggested output sections:
 

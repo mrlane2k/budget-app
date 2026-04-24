@@ -1,4 +1,3 @@
-import { apiPath } from "@/lib/basepath";
 import { ClientRequestError } from "@/lib/client/errors";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
@@ -93,19 +92,6 @@ function toClientError(error: unknown): ClientRequestError {
   return new ClientRequestError("Desktop request failed");
 }
 
-async function readResponseBody(response: Response): Promise<unknown> {
-  if (response.status === 204) {
-    return null;
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    return response.json().catch(() => null);
-  }
-
-  return response.text().catch(() => null);
-}
-
 export async function request<T>({
   path,
   method = "GET",
@@ -113,43 +99,29 @@ export async function request<T>({
   tauriCommand,
   tauriArgs,
 }: RequestOptions): Promise<T> {
-  if (tauriCommand && await shouldUseTauriTransport()) {
-    const tauriCore = await loadTauriCore();
-    if (!tauriCore) {
-      throw new ClientRequestError("Tauri runtime is not available.");
-    }
+  void method;
+  void body;
 
-    try {
-      return await tauriCore.invoke<T>(
-        tauriCommand,
-        (tauriArgs ?? {}) as Record<string, unknown>
-      );
-    } catch (error) {
-      throw toClientError(error);
-    }
+  if (!tauriCommand) {
+    throw new ClientRequestError(
+      `Desktop request for "${path}" is missing a Tauri command binding.`
+    );
   }
 
-  const response = await fetch(apiPath(path), {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-
-  const payload = await readResponseBody(response);
-  if (!response.ok) {
-    const message =
-      typeof payload === "object" &&
-      payload !== null &&
-      "error" in payload &&
-      typeof payload.error === "string"
-        ? payload.error
-        : response.statusText || "Request failed.";
-
-    throw new ClientRequestError(message, {
-      status: response.status,
-      details: payload,
-    });
+  const isDesktopRuntime = await shouldUseTauriTransport();
+  const tauriCore = await loadTauriCore();
+  if (!isDesktopRuntime || !tauriCore) {
+    throw new ClientRequestError(
+      "This app now runs through the Tauri desktop shell. Launch it with `npm run desktop:dev` or a packaged desktop build."
+    );
   }
 
-  return payload as T;
+  try {
+    return await tauriCore.invoke<T>(
+      tauriCommand,
+      (tauriArgs ?? {}) as Record<string, unknown>
+    );
+  } catch (error) {
+    throw toClientError(error);
+  }
 }

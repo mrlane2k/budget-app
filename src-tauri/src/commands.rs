@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -582,6 +583,7 @@ pub struct LegacyImportResponse {
     imported_cash_transactions: i64,
     imported_monthly_budgets: i64,
     imported_monthly_closes: i64,
+    archived_legacy_database: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -735,6 +737,65 @@ pub struct MonthlyBudgetResponse {
     savings_target: f64,
     extra_debt_payment_target: f64,
     created_at: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct MonthlyCloseResponse {
+    id: i64,
+    year: i64,
+    month: i64,
+    bills_reviewed: bool,
+    transfers_reviewed: bool,
+    disposable_reviewed: bool,
+    credit_cards_reviewed: bool,
+    closed_at: Option<String>,
+    notes: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct CalendarEventResponse {
+    id: String,
+    date: String,
+    #[serde(rename = "type")]
+    event_type: String,
+    title: String,
+    subtitle: Option<String>,
+    amount: Option<f64>,
+    status: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarSummaryResponse {
+    bill_count: usize,
+    payday_count: usize,
+    transfer_count: usize,
+    credit_card_due_count: usize,
+    savings_contribution_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarFundingSummaryResponse {
+    bills_account_balance: f64,
+    total_scheduled_obligations: f64,
+    scheduled_obligations: f64,
+    available_after_scheduled: f64,
+    sufficiency: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarMonthResponse {
+    year: i64,
+    month: i64,
+    label: String,
+    events: Vec<CalendarEventResponse>,
+    summary: CalendarSummaryResponse,
+    funding: CalendarFundingSummaryResponse,
+    close: Option<MonthlyCloseResponse>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1045,6 +1106,22 @@ fn map_monthly_budget_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MonthlyBu
     })
 }
 
+fn map_monthly_close_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MonthlyCloseResponse> {
+    Ok(MonthlyCloseResponse {
+        id: row.get(0)?,
+        year: row.get(1)?,
+        month: row.get(2)?,
+        bills_reviewed: row.get::<_, i64>(3)? != 0,
+        transfers_reviewed: row.get::<_, i64>(4)? != 0,
+        disposable_reviewed: row.get::<_, i64>(5)? != 0,
+        credit_cards_reviewed: row.get::<_, i64>(6)? != 0,
+        closed_at: row.get(7)?,
+        notes: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
 fn signed_amount(direction: &str, amount: f64) -> f64 {
     if direction == "inflow" {
         amount
@@ -1063,6 +1140,208 @@ fn build_month_label(year: i64, month: i64) -> String {
         .copied()
         .unwrap_or("Mon");
     format!("{label} {year}")
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn day_count_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 30,
+    }
+}
+
+fn build_iso_date(year: i64, month: i64, day: i64) -> String {
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn parse_iso_date(value: &str) -> Option<(i64, i64, i64)> {
+    let date_part = value.get(0..10)?;
+    let mut parts = date_part.split('-');
+    let year = parts.next()?.parse::<i64>().ok()?;
+    let month = parts.next()?.parse::<i64>().ok()?;
+    let day = parts.next()?.parse::<i64>().ok()?;
+
+    if !(1..=12).contains(&month) || !(1..=day_count_in_month(year, month)).contains(&day) {
+        return None;
+    }
+
+    Some((year, month, day))
+}
+
+fn add_days(mut year: i64, mut month: i64, mut day: i64, delta: i64) -> (i64, i64, i64) {
+    if delta >= 0 {
+        for _ in 0..delta {
+            day += 1;
+            if day > day_count_in_month(year, month) {
+                day = 1;
+                month += 1;
+                if month > 12 {
+                    month = 1;
+                    year += 1;
+                }
+            }
+        }
+    } else {
+        for _ in 0..(-delta) {
+            day -= 1;
+            if day < 1 {
+                month -= 1;
+                if month < 1 {
+                    month = 12;
+                    year -= 1;
+                }
+                day = day_count_in_month(year, month);
+            }
+        }
+    }
+
+    (year, month, day)
+}
+
+fn add_months(year: i64, month: i64, day: i64, delta: i64) -> (i64, i64, i64) {
+    let month_index = year * 12 + (month - 1) + delta;
+    let next_year = month_index.div_euclid(12);
+    let next_month = month_index.rem_euclid(12) + 1;
+    let next_day = day.min(day_count_in_month(next_year, next_month));
+
+    (next_year, next_month, next_day)
+}
+
+fn add_pay_cycle(date: (i64, i64, i64), pay_cycle: &str) -> (i64, i64, i64) {
+    match pay_cycle {
+        "weekly" => add_days(date.0, date.1, date.2, 7),
+        "bi-weekly" => add_days(date.0, date.1, date.2, 14),
+        "semi-monthly" => {
+            if date.2 < 15 {
+                (date.0, date.1, 15)
+            } else {
+                let (year, month, _) = add_months(date.0, date.1, 1, 1);
+                (year, month, 1)
+            }
+        }
+        "monthly" => add_months(date.0, date.1, date.2, 1),
+        _ => add_days(date.0, date.1, date.2, 14),
+    }
+}
+
+fn get_expected_paydays_for_month(
+    pay_cycle: &str,
+    last_paycheck_date: Option<&str>,
+    year: i64,
+    month: i64,
+) -> Vec<String> {
+    let Some(last_paycheck_date) = last_paycheck_date else {
+        return Vec::new();
+    };
+    let Some(mut cursor) = parse_iso_date(last_paycheck_date) else {
+        return Vec::new();
+    };
+
+    let month_start = build_iso_date(year, month, 1);
+    let month_end = build_iso_date(year, month, day_count_in_month(year, month));
+    let mut paydays = Vec::new();
+    let mut guard = 0;
+
+    while build_iso_date(cursor.0, cursor.1, cursor.2) < month_start && guard < 100 {
+        cursor = add_pay_cycle(cursor, pay_cycle);
+        guard += 1;
+    }
+
+    while build_iso_date(cursor.0, cursor.1, cursor.2) <= month_end && guard < 140 {
+        let current = build_iso_date(cursor.0, cursor.1, cursor.2);
+        if current >= month_start {
+            paydays.push(current);
+        }
+        cursor = add_pay_cycle(cursor, pay_cycle);
+        guard += 1;
+    }
+
+    paydays
+}
+
+fn get_bill_due_dates_for_month(
+    frequency: &str,
+    due_day: i64,
+    due_date: Option<&str>,
+    year: i64,
+    month: i64,
+) -> Vec<String> {
+    if frequency.is_empty() || frequency == "monthly" {
+        return vec![build_iso_date(
+            year,
+            month,
+            due_day.clamp(1, day_count_in_month(year, month)),
+        )];
+    }
+
+    let Some((anchor_year, anchor_month, anchor_day)) = due_date.and_then(parse_iso_date) else {
+        return Vec::new();
+    };
+
+    let target_month_index = year * 12 + (month - 1);
+    let anchor_month_index = anchor_year * 12 + (anchor_month - 1);
+    let month_delta = target_month_index - anchor_month_index;
+
+    if month_delta < 0 {
+        return Vec::new();
+    }
+
+    if frequency == "annually" {
+        if anchor_month != month {
+            return Vec::new();
+        }
+
+        return vec![build_iso_date(
+            year,
+            month,
+            anchor_day.min(day_count_in_month(year, month)),
+        )];
+    }
+
+    let month_step = if frequency == "quarterly" { 3 } else { 6 };
+    if month_delta % month_step != 0 {
+        return Vec::new();
+    }
+
+    vec![build_iso_date(
+        year,
+        month,
+        anchor_day.min(day_count_in_month(year, month)),
+    )]
+}
+
+fn get_credit_card_due_date_for_month(due_day: i64, year: i64, month: i64) -> String {
+    build_iso_date(
+        year,
+        month,
+        due_day.clamp(1, day_count_in_month(year, month)),
+    )
+}
+
+fn sort_calendar_events(events: &mut [CalendarEventResponse]) {
+    fn type_order(event_type: &str) -> i64 {
+        match event_type {
+            "payday" => 1,
+            "bill_due" => 2,
+            "credit_card_due" => 3,
+            "transfer" => 4,
+            "savings_contribution" => 5,
+            _ => 99,
+        }
+    }
+
+    events.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| type_order(&left.event_type).cmp(&type_order(&right.event_type)))
+            .then_with(|| left.title.cmp(&right.title))
+    });
 }
 
 fn format_currency(value: f64) -> String {
@@ -2211,6 +2490,57 @@ fn get_bill_for_user(
         .map_err(|error| format!("Failed to load local bill: {error}"))
 }
 
+fn list_bills_for_month(
+    connection: &Connection,
+    user_id: i64,
+    year: i64,
+    month: i64,
+) -> CommandResult<Vec<BillResponse>> {
+    let fallback_due_date = build_iso_date(year, month, 1);
+    let mut statement = connection
+        .prepare(
+            "
+      SELECT
+        b.id,
+        b.user_id,
+        b.name,
+        b.category,
+        b.amount,
+        b.due_day,
+        b.due_date,
+        b.is_autopay,
+        b.active,
+        b.frequency,
+        bp.status,
+        bp.amount_paid,
+        bp.paid_at,
+        bp.id AS payment_id
+      FROM bills b
+      LEFT JOIN bill_payments bp
+        ON bp.bill_id = b.id
+       AND bp.year = ?1
+       AND bp.month = ?2
+      WHERE b.user_id = ?3
+        AND b.active = 1
+      ORDER BY
+        CASE WHEN b.frequency = 'monthly' THEN b.due_day ELSE 32 END,
+        COALESCE(b.due_date, ?4),
+        b.name
+      ",
+        )
+        .map_err(|error| format!("Failed to prepare local monthly bills query: {error}"))?;
+
+    let rows = statement
+        .query_map(
+            params![year, month, user_id, fallback_due_date],
+            map_bill_row,
+        )
+        .map_err(|error| format!("Failed to load local monthly bills: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to map local monthly bills: {error}"))
+}
+
 fn sqlite_table_exists(connection: &Connection, table_name: &str) -> CommandResult<bool> {
     let exists = connection
         .query_row(
@@ -2228,6 +2558,77 @@ fn sqlite_table_exists(connection: &Connection, table_name: &str) -> CommandResu
         .map_err(|error| format!("Failed to inspect legacy database tables: {error}"))?;
 
     Ok(exists == 1)
+}
+
+fn archive_legacy_database_files(legacy_db_path: &PathBuf) -> CommandResult<bool> {
+    if !legacy_db_path.exists() {
+        return Ok(false);
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("Failed to compute legacy archive timestamp: {error}"))?
+        .as_secs();
+
+    let legacy_file_name = legacy_db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Legacy database filename is invalid.".to_string())?;
+
+    let archived_db_path = legacy_db_path.with_file_name(format!(
+        "{legacy_file_name}.imported-{timestamp}"
+    ));
+
+    fs::rename(legacy_db_path, &archived_db_path)
+        .map_err(|error| format!("Failed to archive imported legacy database: {error}"))?;
+
+    for suffix in ["-wal", "-shm"] {
+        let sidecar_path = PathBuf::from(format!("{}{}", legacy_db_path.display(), suffix));
+        if !sidecar_path.exists() {
+            continue;
+        }
+
+        let archived_sidecar_path = PathBuf::from(format!("{}{}", archived_db_path.display(), suffix));
+        fs::rename(&sidecar_path, &archived_sidecar_path).map_err(|error| {
+            format!("Failed to archive imported legacy database sidecar file: {error}")
+        })?;
+    }
+
+    Ok(true)
+}
+
+fn list_active_credit_cards(
+    connection: &Connection,
+    user_id: i64,
+) -> CommandResult<Vec<CreditCardResponse>> {
+    let mut statement = connection
+        .prepare(
+            "
+      SELECT
+        id,
+        user_id,
+        name,
+        balance,
+        credit_limit,
+        minimum_payment,
+        apr,
+        due_day,
+        last_four,
+        active
+      FROM credit_cards
+      WHERE user_id = ?1
+        AND active = 1
+      ORDER BY apr DESC, name
+      ",
+        )
+        .map_err(|error| format!("Failed to prepare local active credit cards query: {error}"))?;
+
+    let rows = statement
+        .query_map([user_id], map_credit_card_row)
+        .map_err(|error| format!("Failed to load local active credit cards: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to map local active credit cards: {error}"))
 }
 
 fn get_credit_card_for_user(
@@ -2451,6 +2852,364 @@ fn get_monthly_budget_for_user(
         )
         .optional()
         .map_err(|error| format!("Failed to load local monthly budget: {error}"))
+}
+
+fn get_monthly_close_for_period(
+    connection: &Connection,
+    user_id: i64,
+    year: i64,
+    month: i64,
+) -> CommandResult<Option<MonthlyCloseResponse>> {
+    connection
+        .query_row(
+            "
+      SELECT
+        id,
+        year,
+        month,
+        bills_reviewed,
+        transfers_reviewed,
+        disposable_reviewed,
+        credit_cards_reviewed,
+        closed_at,
+        notes,
+        created_at,
+        updated_at
+      FROM monthly_closes
+      WHERE user_id = ?1
+        AND year = ?2
+        AND month = ?3
+      ",
+            params![user_id, year, month],
+            map_monthly_close_row,
+        )
+        .optional()
+        .map_err(|error| format!("Failed to load local monthly close: {error}"))
+}
+
+fn load_calendar_month(
+    connection: &Connection,
+    user_id: i64,
+    year: i64,
+    month: i64,
+) -> CommandResult<CalendarMonthResponse> {
+    let month_start = build_iso_date(year, month, 1);
+    let month_end = build_iso_date(year, month, day_count_in_month(year, month));
+    let user_profile = fetch_user_settings(connection, user_id)?;
+    let bills = list_bills_for_month(connection, user_id, year, month)?;
+    let cards = list_active_credit_cards(connection, user_id)?;
+    let close = get_monthly_close_for_period(connection, user_id, year, month)?;
+
+    let mut transfer_statement = connection
+        .prepare(
+            "
+      SELECT
+        tg.id,
+        tg.user_id,
+        tg.transfer_date,
+        tg.amount,
+        tg.notes,
+        tg.from_account_id,
+        fa.name AS from_account_name,
+        tg.to_account_id,
+        ta.name AS to_account_name,
+        tg.created_at
+      FROM transfer_groups tg
+      INNER JOIN accounts fa ON fa.id = tg.from_account_id
+      INNER JOIN accounts ta ON ta.id = tg.to_account_id
+      WHERE tg.user_id = ?1
+        AND tg.transfer_date >= ?2
+        AND tg.transfer_date <= ?3
+      ORDER BY tg.transfer_date ASC, tg.id ASC
+      ",
+        )
+        .map_err(|error| format!("Failed to prepare local calendar transfers query: {error}"))?;
+
+    let transfers = transfer_statement
+        .query_map(params![user_id, month_start, month_end], map_transfer_row)
+        .map_err(|error| format!("Failed to load local calendar transfers: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to map local calendar transfers: {error}"))?;
+
+    let mut savings_statement = connection
+        .prepare(
+            "
+      SELECT
+        ct.id,
+        ct.transaction_date,
+        ct.amount,
+        ct.description,
+        ct.notes
+      FROM cash_transactions ct
+      INNER JOIN accounts a ON a.id = ct.account_id
+      WHERE ct.user_id = ?1
+        AND ct.direction = 'inflow'
+        AND a.account_purpose = 'savings'
+        AND ct.transfer_group_id IS NULL
+        AND ct.transaction_date >= ?2
+        AND ct.transaction_date <= ?3
+      ORDER BY ct.transaction_date ASC, ct.id ASC
+      ",
+        )
+        .map_err(|error| format!("Failed to prepare local savings contributions query: {error}"))?;
+
+    let savings_contributions = savings_statement
+        .query_map(params![user_id, month_start, month_end], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to load local savings contributions: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to map local savings contributions: {error}"))?;
+
+    let mut card_payments_statement = connection
+        .prepare(
+            "
+      SELECT
+        cc.id AS card_id,
+        COALESCE(SUM(cct.amount), 0) AS amount_paid
+      FROM credit_cards cc
+      LEFT JOIN credit_card_transactions cct
+        ON cct.card_id = cc.id
+       AND cct.type = 'payment'
+       AND cct.transaction_date >= ?2
+       AND cct.transaction_date <= ?3
+      WHERE cc.user_id = ?1
+        AND cc.active = 1
+      GROUP BY cc.id
+      ",
+        )
+        .map_err(|error| format!("Failed to prepare local card payment summary query: {error}"))?;
+
+    let card_payments = card_payments_statement
+        .query_map(params![user_id, month_start, month_end], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map_err(|error| format!("Failed to load local card payment summary: {error}"))?
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| format!("Failed to map local card payment summary: {error}"))?;
+
+    let bills_account_balance = connection
+        .query_row(
+            "
+      SELECT COALESCE(SUM(current_balance), 0)
+      FROM accounts
+      WHERE user_id = ?1
+        AND account_purpose = 'bills'
+        AND is_active = 1
+      ",
+            [user_id],
+            |row| row.get::<_, f64>(0),
+        )
+        .map_err(|error| format!("Failed to load bills account balance: {error}"))?;
+
+    let mut bill_events = Vec::new();
+    let mut total_scheduled_bill_obligations = 0.0;
+    let mut remaining_bill_obligations = 0.0;
+
+    for bill in &bills {
+        let due_dates = get_bill_due_dates_for_month(
+            &bill.frequency,
+            bill.due_day,
+            bill.due_date.as_deref(),
+            year,
+            month,
+        );
+        if due_dates.is_empty() {
+            continue;
+        }
+
+        let scheduled_amount = bill.amount * due_dates.len() as f64;
+        let amount_paid = bill.amount_paid.unwrap_or(0.0);
+        let remaining_amount = if bill.status.as_deref() == Some("paid") {
+            0.0
+        } else {
+            round_money((bill.amount - amount_paid).max(0.0))
+        };
+
+        total_scheduled_bill_obligations += scheduled_amount;
+        remaining_bill_obligations += remaining_amount * due_dates.len() as f64;
+
+        for due_date in due_dates {
+            let mut subtitle_parts = Vec::new();
+            if let Some(category) = bill.category.clone() {
+                subtitle_parts.push(category);
+            }
+            if bill.is_autopay == 1 {
+                subtitle_parts.push("Autopay".to_string());
+            }
+            if bill.status.as_deref() == Some("paid") {
+                subtitle_parts.push("Fully paid".to_string());
+            } else if amount_paid > 0.0 {
+                subtitle_parts.push(format!("{} left", format_currency(remaining_amount)));
+            }
+
+            bill_events.push(CalendarEventResponse {
+                id: format!("bill-{}-{due_date}", bill.id),
+                date: due_date,
+                event_type: "bill_due".to_string(),
+                title: bill.name.clone(),
+                subtitle: if subtitle_parts.is_empty() {
+                    None
+                } else {
+                    Some(subtitle_parts.join(" / "))
+                },
+                amount: Some(round_money(bill.amount)),
+                status: Some(
+                    bill.status
+                        .clone()
+                        .unwrap_or_else(|| "scheduled".to_string()),
+                ),
+            });
+        }
+    }
+
+    let payday_amount = if user_profile.monthly_income > 0.0 {
+        Some(round_money(user_profile.monthly_income))
+    } else {
+        None
+    };
+    let payday_events = get_expected_paydays_for_month(
+        &user_profile.pay_cycle,
+        user_profile.last_paycheck_date.as_deref(),
+        year,
+        month,
+    )
+    .into_iter()
+    .enumerate()
+    .map(|(index, payday)| CalendarEventResponse {
+        id: format!("payday-{payday}-{index}"),
+        date: payday,
+        event_type: "payday".to_string(),
+        title: "Expected paycheck".to_string(),
+        subtitle: Some(user_profile.pay_cycle.replace('-', " ")),
+        amount: payday_amount,
+        status: Some("expected".to_string()),
+    })
+    .collect::<Vec<_>>();
+
+    let transfer_events = transfers
+        .iter()
+        .map(|transfer| CalendarEventResponse {
+            id: format!("transfer-{}", transfer.id),
+            date: transfer.transfer_date.clone(),
+            event_type: "transfer".to_string(),
+            title: format!("Transfer to {}", transfer.to_account_name),
+            subtitle: Some(format!(
+                "From {}{}",
+                transfer.from_account_name,
+                transfer
+                    .notes
+                    .as_ref()
+                    .map(|notes| format!(" / {notes}"))
+                    .unwrap_or_default()
+            )),
+            amount: Some(round_money(transfer.amount)),
+            status: Some("recorded".to_string()),
+        })
+        .collect::<Vec<_>>();
+
+    let savings_events = savings_contributions
+        .into_iter()
+        .map(
+            |(id, transaction_date, amount, description, notes)| CalendarEventResponse {
+                id: format!("savings-{id}"),
+                date: transaction_date,
+                event_type: "savings_contribution".to_string(),
+                title: if description.trim().is_empty() {
+                    "Savings contribution".to_string()
+                } else {
+                    description
+                },
+                subtitle: notes,
+                amount: Some(round_money(amount)),
+                status: Some("recorded".to_string()),
+            },
+        )
+        .collect::<Vec<_>>();
+
+    let mut credit_card_events = Vec::new();
+    let mut total_scheduled_card_minimums = 0.0;
+    let mut remaining_scheduled_card_minimums = 0.0;
+
+    for card in &cards {
+        if card.minimum_payment <= 0.0 || card.balance <= 0.0 || card.due_day <= 0 {
+            continue;
+        }
+
+        total_scheduled_card_minimums += card.minimum_payment;
+        let amount_paid = *card_payments.get(&card.id).unwrap_or(&0.0);
+        let remaining_minimum = round_money((card.minimum_payment - amount_paid).max(0.0));
+        remaining_scheduled_card_minimums += remaining_minimum;
+
+        credit_card_events.push(CalendarEventResponse {
+            id: format!("card-{}-{year}-{month}", card.id),
+            date: get_credit_card_due_date_for_month(card.due_day, year, month),
+            event_type: "credit_card_due".to_string(),
+            title: format!("{} due", card.name),
+            subtitle: Some(if amount_paid > 0.0 {
+                format!("{} paid this month", format_currency(amount_paid))
+            } else {
+                "Minimum payment scheduled".to_string()
+            }),
+            amount: Some(round_money(card.minimum_payment)),
+            status: Some(
+                if amount_paid >= card.minimum_payment {
+                    "paid"
+                } else if amount_paid > 0.0 {
+                    "partial"
+                } else {
+                    "due"
+                }
+                .to_string(),
+            ),
+        });
+    }
+
+    let mut events = Vec::new();
+    events.extend(payday_events.iter().cloned());
+    events.extend(bill_events.iter().cloned());
+    events.extend(credit_card_events.iter().cloned());
+    events.extend(transfer_events.iter().cloned());
+    events.extend(savings_events.iter().cloned());
+    sort_calendar_events(&mut events);
+
+    let total_scheduled_obligations =
+        round_money(total_scheduled_bill_obligations + total_scheduled_card_minimums);
+    let scheduled_obligations =
+        round_money(remaining_bill_obligations + remaining_scheduled_card_minimums);
+    let available_after_scheduled = round_money(bills_account_balance - scheduled_obligations);
+
+    Ok(CalendarMonthResponse {
+        year,
+        month,
+        label: build_month_label(year, month),
+        events,
+        summary: CalendarSummaryResponse {
+            bill_count: bill_events.len(),
+            payday_count: payday_events.len(),
+            transfer_count: transfer_events.len(),
+            credit_card_due_count: credit_card_events.len(),
+            savings_contribution_count: savings_events.len(),
+        },
+        funding: CalendarFundingSummaryResponse {
+            bills_account_balance: round_money(bills_account_balance),
+            total_scheduled_obligations,
+            scheduled_obligations,
+            available_after_scheduled,
+            sufficiency: if available_after_scheduled >= 0.0 {
+                "covered".to_string()
+            } else {
+                "short".to_string()
+            },
+        },
+        close,
+    })
 }
 
 fn load_budget_vs_actual_comparisons(
@@ -3124,6 +3883,10 @@ pub fn import_legacy_database(
         .commit()
         .map_err(|error| format!("Failed to commit local import transaction: {error}"))?;
 
+    drop(source);
+
+    let archived_legacy_database = archive_legacy_database_files(&state.legacy_db_path)?;
+
     Ok(LegacyImportResponse {
         success: true,
         imported_users,
@@ -3136,6 +3899,7 @@ pub fn import_legacy_database(
         imported_cash_transactions,
         imported_monthly_budgets,
         imported_monthly_closes,
+        archived_legacy_database,
     })
 }
 
@@ -4534,6 +5298,113 @@ pub fn create_transfer(
             map_transfer_row,
         )
         .map_err(|error| format!("Failed to load local transfer: {error}"))
+}
+
+#[tauri::command]
+pub fn get_calendar_month(
+    state: State<'_, DesktopState>,
+    year: Option<i64>,
+    month: Option<i64>,
+) -> CommandResult<CalendarMonthResponse> {
+    let session = state.current_session()?;
+    let connection = state.open_connection()?;
+    let now = connection
+        .query_row(
+            "
+      SELECT
+        CAST(strftime('%Y', 'now', 'localtime') AS INTEGER),
+        CAST(strftime('%m', 'now', 'localtime') AS INTEGER)
+      ",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(|error| format!("Failed to resolve current calendar period: {error}"))?;
+
+    let target_year = year.unwrap_or(now.0);
+    let target_month = month.unwrap_or(now.1);
+
+    if !(2000..=2100).contains(&target_year) {
+        return Err("Invalid year".to_string());
+    }
+    if !(1..=12).contains(&target_month) {
+        return Err("Invalid month".to_string());
+    }
+
+    load_calendar_month(&connection, session.user_id, target_year, target_month)
+}
+
+#[tauri::command]
+pub fn save_monthly_close(
+    state: State<'_, DesktopState>,
+    year: i64,
+    month: i64,
+    bills_reviewed: bool,
+    transfers_reviewed: bool,
+    disposable_reviewed: bool,
+    credit_cards_reviewed: bool,
+    notes: Option<String>,
+    closed: bool,
+) -> CommandResult<MonthlyCloseResponse> {
+    let session = state.current_session()?;
+    let connection = state.open_connection()?;
+
+    if !(2000..=2100).contains(&year) {
+        return Err("Valid year is required".to_string());
+    }
+    if !(1..=12).contains(&month) {
+        return Err("Valid month is required".to_string());
+    }
+
+    let checklist_complete =
+        bills_reviewed && transfers_reviewed && disposable_reviewed && credit_cards_reviewed;
+    if closed && !checklist_complete {
+        return Err("Complete every review item before closing the month".to_string());
+    }
+
+    connection
+        .execute(
+            "
+      INSERT INTO monthly_closes (
+        user_id,
+        year,
+        month,
+        bills_reviewed,
+        transfers_reviewed,
+        disposable_reviewed,
+        credit_cards_reviewed,
+        closed_at,
+        notes
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CASE WHEN ?8 THEN datetime('now') ELSE NULL END, ?9)
+      ON CONFLICT (user_id, year, month)
+      DO UPDATE SET
+        bills_reviewed = excluded.bills_reviewed,
+        transfers_reviewed = excluded.transfers_reviewed,
+        disposable_reviewed = excluded.disposable_reviewed,
+        credit_cards_reviewed = excluded.credit_cards_reviewed,
+        closed_at = CASE
+          WHEN ?8 THEN COALESCE(monthly_closes.closed_at, datetime('now'))
+          ELSE NULL
+        END,
+        notes = excluded.notes,
+        updated_at = datetime('now')
+      ",
+            params![
+                session.user_id,
+                year,
+                month,
+                if bills_reviewed { 1 } else { 0 },
+                if transfers_reviewed { 1 } else { 0 },
+                if disposable_reviewed { 1 } else { 0 },
+                if credit_cards_reviewed { 1 } else { 0 },
+                if closed { 1 } else { 0 },
+                notes.and_then(|value| normalize_optional_text(&value))
+            ],
+        )
+        .map_err(|error| format!("Failed to save local monthly close: {error}"))?;
+
+    get_monthly_close_for_period(&connection, session.user_id, year, month)?
+        .ok_or_else(|| "Failed to load saved monthly close.".to_string())
 }
 
 #[tauri::command]

@@ -1,61 +1,17 @@
 'use client';
 
-import { apiPath } from '@/lib/basepath';
 import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
-
-type CalendarEventType =
-  | 'bill_due'
-  | 'payday'
-  | 'transfer'
-  | 'credit_card_due'
-  | 'savings_contribution';
-
-type CalendarEvent = {
-  id: string;
-  date: string;
-  type: CalendarEventType;
-  title: string;
-  subtitle: string | null;
-  amount: number | null;
-  status: string | null;
-};
-
-type MonthlyClose = {
-  id: number;
-  year: number;
-  month: number;
-  bills_reviewed: boolean;
-  transfers_reviewed: boolean;
-  disposable_reviewed: boolean;
-  credit_cards_reviewed: boolean;
-  closed_at: string | null;
-  notes: string | null;
-  created_at: string;
-  updated_at: string;
-} | null;
-
-type CalendarResponse = {
-  year: number;
-  month: number;
-  label: string;
-  events: CalendarEvent[];
-  summary: {
-    billCount: number;
-    paydayCount: number;
-    transferCount: number;
-    creditCardDueCount: number;
-    savingsContributionCount: number;
-  };
-  funding: {
-    billsAccountBalance: number;
-    totalScheduledObligations: number;
-    scheduledObligations: number;
-    availableAfterScheduled: number;
-    sufficiency: 'covered' | 'short';
-  };
-  close: MonthlyClose;
-};
+import { getErrorMessage } from '@/lib/client/errors';
+import {
+  getCalendarMonth,
+  saveMonthlyClose,
+  type CalendarEvent,
+  type CalendarEventType,
+  type CalendarResponse,
+  type MonthlyClose,
+} from '@/lib/client/calendar-client';
+import { useProtectedRoute } from '@/lib/client/use-protected-route';
 
 type CloseFormState = {
   bills_reviewed: boolean;
@@ -147,7 +103,7 @@ function buildCalendarDays(year: number, month: number) {
   });
 }
 
-function buildCloseForm(close: MonthlyClose): CloseFormState {
+function buildCloseForm(close: MonthlyClose | null): CloseFormState {
   return {
     bills_reviewed: close?.bills_reviewed ?? false,
     transfers_reviewed: close?.transfers_reviewed ?? false,
@@ -188,6 +144,7 @@ function statusLabel(status: string | null) {
 }
 
 export default function CalendarPage() {
+  const { checkingAuth, authError } = useProtectedRoute();
   const initialDate = new Date();
   const [year, setYear] = useState(initialDate.getFullYear());
   const [month, setMonth] = useState(initialDate.getMonth() + 1);
@@ -206,22 +163,13 @@ export default function CalendarPage() {
       setError('');
 
       try {
-        const response = await fetch(
-          apiPath(`/api/calendar?year=${year}&month=${month}`)
-        );
-        const payload = await response.json();
-
-        if (!response.ok) {
-          throw new Error(payload?.error || 'Failed to load calendar.');
-        }
-
+        const payload = await getCalendarMonth({ year, month });
         if (cancelled) {
           return;
         }
 
         setData(payload);
         setCloseForm(buildCloseForm(payload.close));
-
         setSelectedDate((current) => {
           if (current.startsWith(`${payload.year}-${String(payload.month).padStart(2, '0')}`)) {
             return current;
@@ -231,11 +179,7 @@ export default function CalendarPage() {
         });
       } catch (fetchError) {
         if (!cancelled) {
-          setError(
-            fetchError instanceof Error
-              ? fetchError.message
-              : 'Failed to load calendar.'
-          );
+          setError(getErrorMessage(fetchError, 'Failed to load calendar.'));
         }
       } finally {
         if (!cancelled) {
@@ -244,12 +188,14 @@ export default function CalendarPage() {
       }
     }
 
-    loadCalendar();
+    if (!checkingAuth && !authError) {
+      void loadCalendar();
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [year, month]);
+  }, [authError, checkingAuth, month, year]);
 
   async function saveClose(nextClosed: boolean) {
     if (!data) {
@@ -260,30 +206,24 @@ export default function CalendarPage() {
     setError('');
 
     try {
-      const response = await fetch(apiPath('/api/monthly-close'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          year: data.year,
-          month: data.month,
-          ...closeForm,
-          closed: nextClosed,
-        }),
+      const payload = await saveMonthlyClose({
+        year: data.year,
+        month: data.month,
+        ...closeForm,
+        closed: nextClosed,
       });
 
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.error || 'Failed to save monthly close.');
-      }
-
-      setData((current) => (current ? { ...current, close: payload } : current));
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              close: payload,
+            }
+          : current
+      );
       setCloseForm(buildCloseForm(payload));
     } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : 'Failed to save monthly close.'
-      );
+      setError(getErrorMessage(saveError, 'Failed to save monthly close.'));
     } finally {
       setSaving(false);
     }
@@ -359,15 +299,15 @@ export default function CalendarPage() {
             </div>
           </div>
 
-          {error ? (
+          {authError || error ? (
             <div className="mb-6 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300">
-              {error}
+              {authError || error}
             </div>
           ) : null}
 
-          {loading || !data ? (
+          {checkingAuth || loading || !data ? (
             <div className="rounded-xl border border-gray-800 bg-gray-900 p-10 text-center text-gray-400">
-              Loading calendar...
+              {checkingAuth ? 'Checking session...' : 'Loading calendar...'}
             </div>
           ) : (
             <>
@@ -416,7 +356,8 @@ export default function CalendarPage() {
                     {formatCurrency(data.funding.scheduledObligations)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500">
-                    {formatCurrency(data.funding.totalScheduledObligations)} scheduled this month before paid items are backed out.
+                    {formatCurrency(data.funding.totalScheduledObligations)} scheduled this
+                    month before paid items are backed out.
                   </p>
                 </section>
 
@@ -424,8 +365,9 @@ export default function CalendarPage() {
                   <p className="text-xs uppercase tracking-wide text-gray-500">Calendar Events</p>
                   <p className="mt-2 text-2xl font-bold text-cyan-300">{totalEvents}</p>
                   <p className="mt-1 text-xs text-gray-500">
-                    {data.summary.paydayCount} paydays, {data.summary.transferCount} transfers,{' '}
-                    {data.summary.billCount} bills, {data.summary.creditCardDueCount} card dues.
+                    {data.summary.paydayCount} paydays, {data.summary.transferCount}{' '}
+                    transfers, {data.summary.billCount} bills,{' '}
+                    {data.summary.creditCardDueCount} card dues.
                   </p>
                 </section>
               </div>
@@ -531,7 +473,8 @@ export default function CalendarPage() {
                         </h2>
                         <p className="mt-1 text-xs text-gray-500">
                           {selectedDateEvents.length} event
-                          {selectedDateEvents.length === 1 ? '' : 's'} scheduled for this day.
+                          {selectedDateEvents.length === 1 ? '' : 's'} scheduled for this
+                          day.
                         </p>
                       </div>
                       <span className="rounded-full bg-gray-800 px-3 py-1 text-xs text-gray-400">
@@ -563,7 +506,9 @@ export default function CalendarPage() {
                                       {tone.label}
                                     </span>
                                     {label ? (
-                                      <span className="text-[11px] text-gray-300">{label}</span>
+                                      <span className="text-[11px] text-gray-300">
+                                        {label}
+                                      </span>
                                     ) : null}
                                   </div>
                                   <h3 className="mt-2 text-sm font-semibold text-white">
@@ -593,7 +538,8 @@ export default function CalendarPage() {
                       <div>
                         <h2 className="text-base font-semibold text-white">Monthly Close</h2>
                         <p className="mt-1 text-xs text-gray-500">
-                          Save review progress, then mark the month trusted when everything checks out.
+                          Save review progress, then mark the month trusted when everything
+                          checks out.
                         </p>
                       </div>
                       <span
@@ -663,7 +609,7 @@ export default function CalendarPage() {
                           onClick={() => saveClose(false)}
                           className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-200 disabled:opacity-60"
                         >
-                          Reopen Month
+                          {saving ? 'Reopening...' : 'Reopen Month'}
                         </button>
                       ) : (
                         <>
@@ -681,7 +627,7 @@ export default function CalendarPage() {
                             onClick={() => saveClose(true)}
                             className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-60"
                           >
-                            Mark Month Closed
+                            {saving ? 'Closing...' : 'Mark Month Closed'}
                           </button>
                         </>
                       )}

@@ -2,6 +2,11 @@
 
 This folder breaks the next product roadmap into separate implementation phases.
 
+Current status:
+
+- Phases 1 through 4 are now implemented in the desktop app.
+- Phases 5 and 6 are still forward-looking Plaid/import planning.
+
 The app is being planned around four money buckets:
 
 - `Bills Checking`
@@ -18,10 +23,10 @@ That model is intentional. The goal is not just to track spending, but to track 
 
 ## Phase Index
 
-- [Phase 1: Cash Buckets Foundation](./phase-1-cash-buckets-foundation.md)
-- [Phase 2: Trends and Spending Visibility](./phase-2-trends-and-spending-visibility.md)
-- [Phase 3: Budget vs Actual](./phase-3-budget-vs-actual.md)
-- [Phase 4: Calendar, Transfers, and Monthly Close](./phase-4-calendar-transfers-and-monthly-close.md)
+- [Phase 1: Cash Buckets Foundation](./phase-1-cash-buckets-foundation.md) - completed
+- [Phase 2: Trends and Spending Visibility](./phase-2-trends-and-spending-visibility.md) - completed
+- [Phase 3: Budget vs Actual](./phase-3-budget-vs-actual.md) - completed
+- [Phase 4: Calendar, Transfers, and Monthly Close](./phase-4-calendar-transfers-and-monthly-close.md) - completed
 - [Phase 5: Plaid-Ready Data Foundation](./phase-5-plaid-ready-data-foundation.md)
 - [Phase 6: Plaid Integration and Reconciliation](./phase-6-plaid-integration-and-reconciliation.md)
 

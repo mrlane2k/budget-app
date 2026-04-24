@@ -1,5 +1,7 @@
 # Phase 3: Budget vs Actual
 
+Status: completed in the desktop app.
+
 ## Goal
 
 Compare planned monthly behavior against actual outcomes.
@@ -34,13 +36,12 @@ Unique constraint:
 
 - `user_id`, `year`, `month`
 
-## API Work
+## Runtime Work
 
 Add:
 
-- `GET/POST /api/monthly-budgets`
-- `PUT /api/monthly-budgets/[id]`
-- expand `GET /api/trends` or add a separate `GET /api/budget-vs-actual`
+- desktop-native monthly budget create/update commands
+- desktop-native `get_budget_vs_actual` command
 
 ## UI Work
 

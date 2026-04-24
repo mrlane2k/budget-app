@@ -47,6 +47,7 @@ type LegacyImportResponse = SuccessResponse & {
   importedCashTransactions?: number;
   importedMonthlyBudgets?: number;
   importedMonthlyCloses?: number;
+  archivedLegacyDatabase?: boolean;
 };
 
 async function requireDesktopRuntime(): Promise<void> {

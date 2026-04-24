@@ -1,5 +1,7 @@
 # Phase 4: Calendar, Transfers, and Monthly Close
 
+Status: completed in the desktop app.
+
 ## Goal
 
 Make timing and review visible:
@@ -56,12 +58,12 @@ Suggested `monthly_closes` fields:
 - `closed_at`
 - `notes` nullable
 
-## API Work
+## Runtime Work
 
 Add:
 
-- `GET /api/calendar`
-- `GET/POST /api/monthly-close`
+- desktop-native `get_calendar_month` command
+- desktop-native `save_monthly_close` command
 
 ## Product Rules
 

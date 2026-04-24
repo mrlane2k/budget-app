@@ -41,25 +41,3 @@ export const runtimeConfig = {
   port: parsePort(process.env.PORT),
   cookieSecure: parseBoolean(process.env.COOKIE_SECURE) ?? isProduction,
 };
-
-export function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (secret) {
-    return secret;
-  }
-
-  if (runtimeConfig.isProduction) {
-    throw new Error("JWT_SECRET is required in production.");
-  }
-
-  return "dev-only-change-me";
-}
-
-export function getDatabaseUrl(): string {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error("DATABASE_URL is required.");
-  }
-
-  return databaseUrl;
-}

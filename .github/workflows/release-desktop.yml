@@ -77,7 +77,7 @@ jobs:
             - macOS: `.app`
             - Windows: `.msi` and NSIS installer
             - Linux: `.deb` and `.AppImage`
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
           args: ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}

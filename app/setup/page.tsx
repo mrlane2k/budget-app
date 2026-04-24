@@ -83,7 +83,7 @@ export default function SetupPage() {
     try {
       const result = await importLegacyDatabase();
       setInfo(
-        `Imported ${result.importedUsers} user, ${result.importedAccounts} accounts, ${result.importedBills} bills, ${result.importedBillPayments} bill payments, ${result.importedCreditCards ?? 0} credit cards, ${result.importedCreditCardTransactions ?? 0} credit card entries, ${result.importedTransfers ?? 0} transfers, ${result.importedCashTransactions ?? 0} cash transactions, ${result.importedMonthlyBudgets ?? 0} monthly budgets, and ${result.importedMonthlyCloses ?? 0} monthly close records from the earlier local database.`,
+        `Imported ${result.importedUsers} user, ${result.importedAccounts} accounts, ${result.importedBills} bills, ${result.importedBillPayments} bill payments, ${result.importedCreditCards ?? 0} credit cards, ${result.importedCreditCardTransactions ?? 0} credit card entries, ${result.importedTransfers ?? 0} transfers, ${result.importedCashTransactions ?? 0} cash transactions, ${result.importedMonthlyBudgets ?? 0} monthly budgets, and ${result.importedMonthlyCloses ?? 0} monthly close records from the earlier local database.${result.archivedLegacyDatabase ? ' The legacy database was archived so it will not be offered for import again.' : ''}`,
       );
       router.replace('/login');
       router.refresh();

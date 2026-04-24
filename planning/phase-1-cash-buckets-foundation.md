@@ -118,7 +118,7 @@ Build:
 ## Dependencies
 
 - existing auth
-- existing Postgres migration pattern
+- existing desktop-native schema and command registration pattern
 
 ## Risks
 
