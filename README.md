@@ -84,6 +84,40 @@ npm run dev
 
 5. Open `/setup` if the database is empty, otherwise sign in at `/login`.
 
+## Desktop Development
+
+The repo now includes an initial Tauri desktop shell under [`src-tauri`](./src-tauri).
+
+Current status:
+
+- `npm run desktop:dev` is wired to the existing Next.js dev server for local desktop development
+- `npm run desktop:info` reports the local Tauri and system environment
+- `npm run desktop:build` now packages the current desktop-native pages by materializing a static `dist/` from the prerendered Next build output before Tauri bundles the app
+- the frontend now auto-switches to Tauri `invoke()` inside the desktop shell for the setup, login, settings, and bills slice
+- credit cards and cash buckets now use the same desktop-native transport and encrypted local database
+- that slice now runs against a local SQLite database in the desktop app data directory with in-process session state on the Rust side
+- the local database key is generated separately and stored in the OS credential store; the database file itself is now created as an encrypted local store for the native desktop slice
+- the desktop app can now optionally wrap that database key behind a separate vault passphrase, with unlock and relock flows wired through the login and settings screens
+- the settings screen can also rotate the underlying SQLCipher database key without changing the rest of the app data
+- if an earlier plaintext desktop prototype database is present in the app data directory, the setup screen can import it into the encrypted store
+- the rest of the app is still mid-migration, so reporting-heavy screens may continue using the existing web-style paths until their native command slices are implemented
+
+In other words, the desktop shell is ready to develop against now, and the current production bundle path is good enough to start producing release artifacts while the remaining reporting screens are still being migrated.
+
+## Desktop Releases
+
+GitHub Releases for desktop builds are handled by [`.github/workflows/release-desktop.yml`](./.github/workflows/release-desktop.yml).
+
+- push a tag like `app-v0.1.0` to build release assets on macOS, Windows, and Linux
+- or run the workflow manually from GitHub Actions and provide the tag name
+- the workflow currently creates a draft release so the generated bundles can be reviewed before publishing
+- bundle targets are platform-specific:
+  - macOS: `.app`
+  - Windows: `.msi` and NSIS installer
+  - Linux: `.deb` and `.AppImage`
+
+Code-signing and updater secrets can be layered on later. The checked-in workflow already passes `TAURI_PRIVATE_KEY` and `TAURI_KEY_PASSWORD` through if you add them as repository secrets.
+
 ## Home-Server Deployment
 
 The checked-in production target remains:

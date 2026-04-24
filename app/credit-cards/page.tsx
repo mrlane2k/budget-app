@@ -1,32 +1,18 @@
 'use client';
-import { apiPath } from '@/lib/basepath';
 
 import { Fragment, useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
-
-interface CreditCard {
-  id: number;
-  name: string;
-  balance: number;
-  credit_limit: number;
-  minimum_payment: number;
-  apr: number;
-  due_day: number;
-  last_four: string | null;
-}
-
-interface CreditCardTransaction {
-  id: number;
-  card_id: number;
-  type: 'purchase' | 'payment' | 'interest' | 'fee' | 'adjustment';
-  amount: number;
-  note: string | null;
-  category: string | null;
-  merchant_name: string | null;
-  source_account_id: number | null;
-  transaction_date: string;
-  created_at: string;
-}
+import {
+  addCreditCardLedgerEntries,
+  deleteCreditCard,
+  listCreditCardTransactions,
+  listCreditCards,
+  saveCreditCard,
+  type CreditCard,
+  type CreditCardTransaction,
+} from '@/lib/client/credit-card-client';
+import { getErrorMessage } from '@/lib/client/errors';
+import { useProtectedRoute } from '@/lib/client/use-protected-route';
 
 interface CardForm {
   name: string;
@@ -109,6 +95,7 @@ function entrySignedAmount(type: CreditCardTransaction['type'], amount: number) 
 }
 
 export default function CreditCardsPage() {
+  const { checkingAuth, authError } = useProtectedRoute();
   const [cards, setCards] = useState<CreditCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -127,19 +114,34 @@ export default function CreditCardsPage() {
   );
 
   const fetchCards = async () => {
-    const res = await fetch(apiPath('/api/credit-cards'));
-    const data = await res.json();
-    setCards(Array.isArray(data) ? data : []);
-    setLoading(false);
+    try {
+      const data = await listCreditCards();
+      setCards(Array.isArray(data) ? data : []);
+      setError('');
+    } catch (loadError) {
+      setError(getErrorMessage(loadError, 'Failed to load credit cards.'));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchTransactions = async (cardId: number) => {
-    const res = await fetch(apiPath(`/api/credit-cards/${cardId}/payments`));
-    const data = await res.json();
-    setTransactions(prev => ({ ...prev, [cardId]: Array.isArray(data) ? data : [] }));
+    try {
+      const data = await listCreditCardTransactions(cardId);
+      setTransactions(prev => ({ ...prev, [cardId]: Array.isArray(data) ? data : [] }));
+      setError('');
+    } catch (loadError) {
+      setError(getErrorMessage(loadError, 'Failed to load credit card history.'));
+    }
   };
 
-  useEffect(() => { fetchCards(); }, []);
+  useEffect(() => {
+    if (checkingAuth || authError) {
+      return;
+    }
+
+    void fetchCards();
+  }, [authError, checkingAuth]);
 
   const openAdd = () => {
     setEditingCard(null);
@@ -207,26 +209,11 @@ export default function CreditCardsPage() {
     };
 
     try {
-      const url = editingCard
-        ? apiPath(`/api/credit-cards/${editingCard.id}`)
-        : apiPath('/api/credit-cards');
-      const method = editingCard ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || 'Failed to save card');
-        return;
-      }
-
+      await saveCreditCard(payload, editingCard?.id);
       await fetchCards();
       closeForm();
-    } catch {
-      setError('Network error');
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, 'Failed to save card.'));
     } finally {
       setSaving(false);
     }
@@ -234,8 +221,12 @@ export default function CreditCardsPage() {
 
   const handleDelete = async (card: CreditCard) => {
     if (!confirm(`Delete "${card.name}"?`)) return;
-    await fetch(apiPath(`/api/credit-cards/${card.id}`), { method: 'DELETE' });
-    await fetchCards();
+    try {
+      await deleteCreditCard(card.id);
+      await fetchCards();
+    } catch (deleteError) {
+      setError(getErrorMessage(deleteError, 'Failed to delete card.'));
+    }
   };
 
   const handlePaymentSubmit = async (e: React.FormEvent) => {
@@ -258,35 +249,25 @@ export default function CreditCardsPage() {
     }
 
     try {
-      const res = await fetch(apiPath(`/api/credit-cards/${payingCard.id}/payments`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          entries: [
-            {
-              type: paymentForm.entry_type,
-              amount: normalizedAmount,
-              category: paymentForm.category || null,
-              merchant_name: paymentForm.merchant_name || null,
-              note: paymentForm.note || null,
-            },
-          ],
-          payment_date: paymentForm.payment_date,
-        }),
+      await addCreditCardLedgerEntries(payingCard.id, {
+        transaction_date: paymentForm.payment_date,
+        entries: [
+          {
+            type: paymentForm.entry_type,
+            amount: normalizedAmount,
+            category: paymentForm.category || null,
+            merchant_name: paymentForm.merchant_name || null,
+            note: paymentForm.note || null,
+          },
+        ],
       });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setPaymentError(data.error || 'Failed to save payment');
-        return;
-      }
 
       await fetchCards();
       await fetchTransactions(payingCard.id);
       setExpandedCardId(payingCard.id);
       closePaymentForm();
-    } catch {
-      setPaymentError('Network error');
+    } catch (saveError) {
+      setPaymentError(getErrorMessage(saveError, 'Failed to save payment.'));
     } finally {
       setSaving(false);
     }
@@ -346,12 +327,12 @@ export default function CreditCardsPage() {
   const avalancheMin = simulateAvalanche(0);
   const avalancheExtra = simulateAvalanche(extra);
 
-  if (loading) {
+  if (checkingAuth || loading) {
     return (
       <div className="flex min-h-screen">
         <Nav />
         <main className="ml-56 flex-1 p-8 flex items-center justify-center">
-          <div className="text-gray-400">Loading...</div>
+          <div className="text-gray-400">{checkingAuth ? 'Checking session...' : 'Loading...'}</div>
         </main>
       </div>
     );
@@ -399,6 +380,12 @@ export default function CreditCardsPage() {
               <p className="text-xl font-bold text-orange-400">{formatCurrency(totalMonthlyInterest)}</p>
             </div>
           </div>
+
+          {(authError || error) && !showForm && !showPaymentForm && (
+            <div className="mb-6 rounded-lg border border-red-800 bg-red-900/30 px-4 py-3 text-sm text-red-400">
+              {authError || error}
+            </div>
+          )}
 
           {sortedByApr.length > 0 && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">

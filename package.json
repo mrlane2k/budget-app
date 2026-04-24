@@ -3,14 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/run-next-dev.mjs",
+    "dev:desktop": "node scripts/run-next-dev.mjs desktop",
     "build": "next build --webpack",
+    "build:desktop:web": "next build --webpack && node scripts/prepare-tauri-dist.mjs",
     "start": "next start",
     "lint": "eslint",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:info": "tauri info",
     "db:migrate": "node scripts/db-migrate.mjs",
     "db:import-sqlite": "node scripts/import-sqlite-to-postgres.mjs"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
     "@types/pg": "^8.20.0",
     "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.3",
@@ -22,6 +28,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@tauri-apps/cli": "^2.10.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20",

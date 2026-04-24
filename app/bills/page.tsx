@@ -1,24 +1,17 @@
 'use client';
-import { apiPath } from '@/lib/basepath';
 
 import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
 import { getNextDueDate } from '@/lib/bills';
-
-interface Bill {
-  id: number;
-  name: string;
-  category: string;
-  amount: number;
-  due_day: number;
-  due_date: string | null;
-  is_autopay: number;
-  active: number;
-  status: string | null;
-  amount_paid: number | null;
-  payment_id: number | null;
-  frequency: string;
-}
+import {
+  deleteBill,
+  listBills,
+  saveBill,
+  type Bill,
+  upsertBillPayment,
+} from '@/lib/client/bill-client';
+import { getErrorMessage } from '@/lib/client/errors';
+import { useProtectedRoute } from '@/lib/client/use-protected-route';
 
 interface BillForm {
   name: string;
@@ -65,6 +58,7 @@ function ordinal(n: number): string {
 }
 
 export default function BillsPage() {
+  const { checkingAuth, authError } = useProtectedRoute();
   const [bills, setBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -78,13 +72,24 @@ export default function BillsPage() {
   const currentMonth = now.getMonth() + 1;
 
   const fetchBills = async () => {
-    const res = await fetch(apiPath('/api/bills'));
-    const data = await res.json();
-    setBills(Array.isArray(data) ? data : []);
-    setLoading(false);
+    try {
+      const data = await listBills();
+      setBills(Array.isArray(data) ? data : []);
+      setError('');
+    } catch (loadError) {
+      setError(getErrorMessage(loadError, 'Failed to load bills.'));
+    } finally {
+      setLoading(false);
+    }
   };
 
-  useEffect(() => { fetchBills(); }, []);
+  useEffect(() => {
+    if (checkingAuth || authError) {
+      return;
+    }
+
+    void fetchBills();
+  }, [authError, checkingAuth]);
 
   const openAdd = () => {
     setEditingBill(null);
@@ -131,24 +136,11 @@ export default function BillsPage() {
     };
 
     try {
-      const url = editingBill ? apiPath(`/api/bills/${editingBill.id}`) : apiPath('/api/bills');
-      const method = editingBill ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || 'Failed to save bill');
-        return;
-      }
-
+      await saveBill(payload, editingBill?.id);
       await fetchBills();
       closeForm();
-    } catch {
-      setError('Network error');
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, 'Failed to save bill.'));
     } finally {
       setSaving(false);
     }
@@ -156,35 +148,39 @@ export default function BillsPage() {
 
   const handleDelete = async (bill: Bill) => {
     if (!confirm(`Delete "${bill.name}"?`)) return;
-    await fetch(apiPath(`/api/bills/${bill.id}`), { method: 'DELETE' });
-    await fetchBills();
+    try {
+      await deleteBill(bill.id);
+      await fetchBills();
+    } catch (deleteError) {
+      setError(getErrorMessage(deleteError, 'Failed to delete bill.'));
+    }
   };
 
   const handlePaymentStatus = async (bill: Bill, status: string) => {
     const newStatus = bill.status === status ? 'unpaid' : status;
-    await fetch(apiPath(`/api/bills/${bill.id}/payments`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      await upsertBillPayment(bill.id, {
         year: currentYear,
         month: currentMonth,
         status: newStatus,
         amount_paid: newStatus === 'paid' ? bill.amount : null,
-      }),
-    });
-    await fetchBills();
+      });
+      await fetchBills();
+    } catch (paymentError) {
+      setError(getErrorMessage(paymentError, 'Failed to update bill status.'));
+    }
   };
 
   const totalAmount = bills.reduce((sum, b) => sum + b.amount, 0);
   const totalPaid = bills.filter(b => b.status === 'paid').reduce((sum, b) => sum + (b.amount_paid ?? b.amount), 0);
   const paidCount = bills.filter(b => b.status === 'paid').length;
 
-  if (loading) {
+  if (checkingAuth || loading) {
     return (
       <div className="flex min-h-screen">
         <Nav />
         <main className="ml-56 flex-1 p-8 flex items-center justify-center">
-          <div className="text-gray-400">Loading...</div>
+          <div className="text-gray-400">{checkingAuth ? 'Checking session...' : 'Loading...'}</div>
         </main>
       </div>
     );
@@ -225,6 +221,12 @@ export default function BillsPage() {
               <p className="text-xl font-bold text-yellow-400">{formatCurrency(totalAmount - totalPaid)}</p>
             </div>
           </div>
+
+          {(authError || error) && !showForm && (
+            <div className="mb-6 rounded-lg border border-red-800 bg-red-900/30 px-4 py-3 text-sm text-red-400">
+              {authError || error}
+            </div>
+          )}
 
           {/* Bills Table */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">

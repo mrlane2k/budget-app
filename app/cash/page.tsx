@@ -1,54 +1,26 @@
 'use client';
-import { apiPath } from '@/lib/basepath';
 
 import { useEffect, useState } from 'react';
 import Nav from '@/components/Nav';
-
-type AccountType = 'checking' | 'savings' | 'credit_card';
-type AccountPurpose = 'bills' | 'disposable' | 'savings' | 'credit_card';
-type CashDirection = 'inflow' | 'outflow';
-type CashTransactionKind =
-  | 'bill_payment'
-  | 'discretionary_spend'
-  | 'transfer'
-  | 'income'
-  | 'savings_contribution'
-  | 'adjustment';
-
-interface Account {
-  id: number;
-  name: string;
-  institution_name: string | null;
-  last_four: string | null;
-  account_type: AccountType;
-  account_purpose: AccountPurpose;
-  current_balance: number;
-}
-
-interface CashTransaction {
-  id: number;
-  account_id: number;
-  account_name: string;
-  account_purpose: AccountPurpose;
-  transaction_date: string;
-  amount: number;
-  direction: CashDirection;
-  category: string | null;
-  merchant_name: string | null;
-  description: string;
-  transaction_kind: CashTransactionKind;
-  transfer_group_id: number | null;
-  notes: string | null;
-}
-
-interface Transfer {
-  id: number;
-  transfer_date: string;
-  amount: number;
-  from_account_name: string;
-  to_account_name: string;
-  notes: string | null;
-}
+import {
+  createTransfer,
+  deleteAccount,
+  deleteCashTransaction,
+  listAccounts,
+  listCashTransactions,
+  listTransfers,
+  saveAccount,
+  saveCashTransaction,
+  type Account,
+  type AccountPurpose,
+  type AccountType,
+  type CashDirection,
+  type CashTransaction,
+  type CashTransactionKind,
+  type Transfer,
+} from '@/lib/client/cash-client';
+import { getErrorMessage } from '@/lib/client/errors';
+import { useProtectedRoute } from '@/lib/client/use-protected-route';
 
 const today = new Date().toISOString().slice(0, 10);
 
@@ -127,6 +99,7 @@ function formatAccountLabel(account: Account) {
 }
 
 export default function CashPage() {
+  const { checkingAuth, authError } = useProtectedRoute();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<CashTransaction[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -140,44 +113,32 @@ export default function CashPage() {
   const [transactionForm, setTransactionForm] = useState(blankTransactionForm);
   const [transferForm, setTransferForm] = useState(blankTransferForm);
 
-  async function parseJson(response: Response) {
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = typeof data?.error === 'string' ? data.error : 'Request failed.';
-      throw new Error(message);
-    }
-    return data;
-  }
-
   async function fetchData() {
     setLoading(true);
     setError('');
     try {
-      const [accountsRes, transactionsRes, transfersRes] = await Promise.all([
-        fetch(apiPath('/api/accounts')),
-        fetch(apiPath('/api/cash-transactions?limit=200')),
-        fetch(apiPath('/api/transfers?limit=60')),
-      ]);
       const [accountsData, transactionsData, transfersData] = await Promise.all([
-        parseJson(accountsRes),
-        parseJson(transactionsRes),
-        parseJson(transfersRes),
+        listAccounts(),
+        listCashTransactions(200),
+        listTransfers(60),
       ]);
       setAccounts(Array.isArray(accountsData) ? accountsData : []);
       setTransactions(Array.isArray(transactionsData) ? transactionsData : []);
       setTransfers(Array.isArray(transfersData) ? transfersData : []);
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : 'Failed to load cash buckets.');
+      setError(getErrorMessage(fetchError, 'Failed to load cash buckets.'));
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    fetchData();
-    // Initial load only; later refreshes are triggered by successful form actions.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (checkingAuth || authError) {
+      return;
+    }
+
+    void fetchData();
+  }, [authError, checkingAuth]);
 
   function resetAccountForm() {
     setEditingAccountId(null);
@@ -195,25 +156,17 @@ export default function CashPage() {
     setError('');
 
     try {
-      await parseJson(
-        await fetch(
-          editingAccountId
-            ? apiPath(`/api/accounts/${editingAccountId}`)
-            : apiPath('/api/accounts'),
-          {
-            method: editingAccountId ? 'PUT' : 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...accountForm,
-              current_balance: parseFloat(accountForm.current_balance || '0'),
-            }),
-          }
-        )
+      await saveAccount(
+        {
+          ...accountForm,
+          current_balance: parseFloat(accountForm.current_balance || '0'),
+        },
+        editingAccountId ?? undefined,
       );
       resetAccountForm();
       await fetchData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Failed to save account.');
+      setError(getErrorMessage(submitError, 'Failed to save account.'));
     } finally {
       setSaving(false);
     }
@@ -225,26 +178,18 @@ export default function CashPage() {
     setError('');
 
     try {
-      await parseJson(
-        await fetch(
-          editingTransactionId
-            ? apiPath(`/api/cash-transactions/${editingTransactionId}`)
-            : apiPath('/api/cash-transactions'),
-          {
-            method: editingTransactionId ? 'PUT' : 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...transactionForm,
-              account_id: Number(transactionForm.account_id),
-              amount: parseFloat(transactionForm.amount || '0'),
-            }),
-          }
-        )
+      await saveCashTransaction(
+        {
+          ...transactionForm,
+          account_id: Number(transactionForm.account_id),
+          amount: parseFloat(transactionForm.amount || '0'),
+        },
+        editingTransactionId ?? undefined,
       );
       resetTransactionForm();
       await fetchData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Failed to save transaction.');
+      setError(getErrorMessage(submitError, 'Failed to save transaction.'));
     } finally {
       setSaving(false);
     }
@@ -256,22 +201,16 @@ export default function CashPage() {
     setError('');
 
     try {
-      await parseJson(
-        await fetch(apiPath('/api/transfers'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...transferForm,
-            from_account_id: Number(transferForm.from_account_id),
-            to_account_id: Number(transferForm.to_account_id),
-            amount: parseFloat(transferForm.amount || '0'),
-          }),
-        })
-      );
+      await createTransfer({
+        ...transferForm,
+        from_account_id: Number(transferForm.from_account_id),
+        to_account_id: Number(transferForm.to_account_id),
+        amount: parseFloat(transferForm.amount || '0'),
+      });
       setTransferForm(blankTransferForm);
       await fetchData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Failed to create transfer.');
+      setError(getErrorMessage(submitError, 'Failed to create transfer.'));
     } finally {
       setSaving(false);
     }
@@ -316,17 +255,13 @@ export default function CashPage() {
     setSaving(true);
     setError('');
     try {
-      await parseJson(
-        await fetch(apiPath(`/api/accounts/${account.id}`), {
-          method: 'DELETE',
-        })
-      );
+      await deleteAccount(account.id);
       if (editingAccountId === account.id) {
         resetAccountForm();
       }
       await fetchData();
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to deactivate account.');
+      setError(getErrorMessage(deleteError, 'Failed to deactivate account.'));
     } finally {
       setSaving(false);
     }
@@ -344,17 +279,13 @@ export default function CashPage() {
     setSaving(true);
     setError('');
     try {
-      await parseJson(
-        await fetch(apiPath(`/api/cash-transactions/${transaction.id}`), {
-          method: 'DELETE',
-        })
-      );
+      await deleteCashTransaction(transaction.id);
       if (editingTransactionId === transaction.id) {
         resetTransactionForm();
       }
       await fetchData();
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete transaction.');
+      setError(getErrorMessage(deleteError, 'Failed to delete transaction.'));
     } finally {
       setSaving(false);
     }
@@ -385,6 +316,17 @@ export default function CashPage() {
     (transaction) => transaction.direction === 'inflow' && transaction.transaction_kind === 'income'
   );
 
+  if (checkingAuth || loading) {
+    return (
+      <div className="flex min-h-screen">
+        <Nav />
+        <main className="ml-56 flex-1 p-8 flex items-center justify-center">
+          <div className="text-gray-400">{checkingAuth ? 'Checking session...' : 'Loading...'}</div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen">
       <Nav />
@@ -402,12 +344,11 @@ export default function CashPage() {
             </p>
           </div>
 
-          {error ? (
+          {authError || error ? (
             <div className="mb-4 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300">
-              {error}
+              {authError || error}
             </div>
           ) : null}
-          {loading ? <div className="mb-4 text-sm text-gray-400">Loading...</div> : null}
 
           <div className="mb-8 grid gap-4 md:grid-cols-3">
             <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">

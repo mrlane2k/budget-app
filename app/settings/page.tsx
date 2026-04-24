@@ -1,17 +1,23 @@
 'use client';
-import { apiPath } from '@/lib/basepath';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Nav from '@/components/Nav';
-
-interface UserSettings {
-  id: number;
-  username: string;
-  pay_cycle: string;
-  last_paycheck_date: string;
-  monthly_income: number;
-  current_savings: number;
-}
+import { getErrorMessage } from '@/lib/client/errors';
+import {
+  changeVaultPassphrase,
+  changePassword,
+  clearVaultPassphrase,
+  getSettings,
+  getVaultStatus,
+  lockVault,
+  rotateDatabaseKey,
+  setVaultPassphrase as enableDesktopVaultPassphrase,
+  type UserSettings,
+  type VaultStatus,
+  updateSettings,
+} from '@/lib/client/user-client';
+import { useProtectedRoute } from '@/lib/client/use-protected-route';
 
 const PAY_CYCLES = [
   { value: 'weekly', label: 'Weekly', description: '4.33 paychecks/month' },
@@ -21,7 +27,10 @@ const PAY_CYCLES = [
 ];
 
 export default function SettingsPage() {
+  const router = useRouter();
+  const { checkingAuth, authError } = useProtectedRoute();
   const [settings, setSettings] = useState<UserSettings | null>(null);
+  const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
   const [payCycle, setPayCycle] = useState('bi-weekly');
   const [lastPaycheckDate, setLastPaycheckDate] = useState('');
   const [monthlyIncome, setMonthlyIncome] = useState('');
@@ -35,37 +44,192 @@ export default function SettingsPage() {
   const [pwSaving, setPwSaving] = useState(false);
   const [pwMsg, setPwMsg] = useState('');
   const [pwError, setPwError] = useState('');
+  const [vaultLoading, setVaultLoading] = useState(false);
+  const [vaultMsg, setVaultMsg] = useState('');
+  const [vaultError, setVaultError] = useState('');
+  const [accountPassword, setAccountPassword] = useState('');
+  const [vaultPassphrase, setVaultPassphrase] = useState('');
+  const [confirmVaultPassphrase, setConfirmVaultPassphrase] = useState('');
+  const [currentVaultPassphrase, setCurrentVaultPassphrase] = useState('');
+  const [newVaultPassphrase, setNewVaultPassphrase] = useState('');
+  const [confirmNewVaultPassphrase, setConfirmNewVaultPassphrase] = useState('');
+  const [removeVaultPassphrase, setRemoveVaultPassphrase] = useState('');
+  const [rotationPassphrase, setRotationPassphrase] = useState('');
 
   useEffect(() => {
-    fetch(apiPath('/api/settings')).then(r => r.json()).then((data: UserSettings) => {
-      setSettings(data);
-      setPayCycle(data.pay_cycle || 'bi-weekly');
-      setLastPaycheckDate(data.last_paycheck_date || '');
-      setMonthlyIncome(data.monthly_income ? String(data.monthly_income) : '');
-      setCurrentSavings(data.current_savings ? String(data.current_savings) : '');
-    });
-  }, []);
+    if (checkingAuth || authError) {
+      return;
+    }
+
+    async function loadSettings() {
+      try {
+        const [data, status] = await Promise.all([getSettings(), getVaultStatus()]);
+        setSettings(data);
+        setVaultStatus(status);
+        setPayCycle(data.pay_cycle || 'bi-weekly');
+        setLastPaycheckDate(data.last_paycheck_date || '');
+        setMonthlyIncome(data.monthly_income ? String(data.monthly_income) : '');
+        setCurrentSavings(data.current_savings ? String(data.current_savings) : '');
+      } catch (loadError) {
+        setSaveMsg(getErrorMessage(loadError, 'Failed to load settings.'));
+      }
+    }
+
+    void loadSettings();
+  }, [authError, checkingAuth]);
+
+  if (checkingAuth || !settings) {
+    return (
+      <div className="flex min-h-screen">
+        <Nav />
+        <main className="ml-56 flex flex-1 items-center justify-center p-8">
+          <div className="text-gray-400">
+            {checkingAuth ? 'Checking session...' : authError || 'Loading settings...'}
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setSaveMsg('');
 
-    const res = await fetch(apiPath('/api/settings'), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pay_cycle: payCycle, last_paycheck_date: lastPaycheckDate, monthly_income: monthlyIncome ? parseFloat(monthlyIncome) : 0, current_savings: currentSavings ? parseFloat(currentSavings) : 0 }),
-    });
-
-    const data = await res.json();
-    setSaving(false);
-
-    if (res.ok) {
+    try {
+      const data = await updateSettings({
+        pay_cycle: payCycle,
+        last_paycheck_date: lastPaycheckDate,
+        monthly_income: monthlyIncome ? parseFloat(monthlyIncome) : 0,
+        current_savings: currentSavings ? parseFloat(currentSavings) : 0,
+      });
       setSaveMsg('Settings saved successfully.');
       setSettings(data);
       setTimeout(() => setSaveMsg(''), 3000);
-    } else {
-      setSaveMsg(data.error || 'Failed to save settings.');
+    } catch (saveError) {
+      setSaveMsg(getErrorMessage(saveError, 'Failed to save settings.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEnableVaultPassphrase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setVaultError('');
+    setVaultMsg('');
+
+    if (vaultPassphrase !== confirmVaultPassphrase) {
+      setVaultError('Vault passphrases do not match.');
+      return;
+    }
+    if (vaultPassphrase.length < 8) {
+      setVaultError('Vault passphrase must be at least 8 characters.');
+      return;
+    }
+
+    setVaultLoading(true);
+    try {
+      await enableDesktopVaultPassphrase({
+        account_password: accountPassword,
+        passphrase: vaultPassphrase,
+      });
+      setVaultStatus(await getVaultStatus());
+      setVaultMsg('Vault passphrase enabled.');
+      setAccountPassword('');
+      setVaultPassphrase('');
+      setConfirmVaultPassphrase('');
+    } catch (vaultMutationError) {
+      setVaultError(getErrorMessage(vaultMutationError, 'Failed to enable the vault passphrase.'));
+    } finally {
+      setVaultLoading(false);
+    }
+  };
+
+  const handleChangeVaultPassphrase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setVaultError('');
+    setVaultMsg('');
+
+    if (newVaultPassphrase !== confirmNewVaultPassphrase) {
+      setVaultError('New vault passphrases do not match.');
+      return;
+    }
+    if (newVaultPassphrase.length < 8) {
+      setVaultError('Vault passphrase must be at least 8 characters.');
+      return;
+    }
+
+    setVaultLoading(true);
+    try {
+      await changeVaultPassphrase({
+        current_passphrase: currentVaultPassphrase,
+        new_passphrase: newVaultPassphrase,
+      });
+      setVaultMsg('Vault passphrase updated.');
+      setCurrentVaultPassphrase('');
+      setNewVaultPassphrase('');
+      setConfirmNewVaultPassphrase('');
+    } catch (vaultMutationError) {
+      setVaultError(getErrorMessage(vaultMutationError, 'Failed to update the vault passphrase.'));
+    } finally {
+      setVaultLoading(false);
+    }
+  };
+
+  const handleClearVaultPassphrase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setVaultError('');
+    setVaultMsg('');
+    setVaultLoading(true);
+
+    try {
+      await clearVaultPassphrase({
+        current_passphrase: removeVaultPassphrase,
+      });
+      setVaultStatus(await getVaultStatus());
+      setVaultMsg('Vault passphrase removed. The database is still encrypted on disk through the OS credential store.');
+      setRemoveVaultPassphrase('');
+    } catch (vaultMutationError) {
+      setVaultError(getErrorMessage(vaultMutationError, 'Failed to remove the vault passphrase.'));
+    } finally {
+      setVaultLoading(false);
+    }
+  };
+
+  const handleLockVault = async () => {
+    setVaultError('');
+    setVaultMsg('');
+    setVaultLoading(true);
+
+    try {
+      await lockVault();
+      router.push('/login');
+      router.refresh();
+    } catch (vaultMutationError) {
+      setVaultError(getErrorMessage(vaultMutationError, 'Failed to lock the vault.'));
+    } finally {
+      setVaultLoading(false);
+    }
+  };
+
+  const handleRotateDatabaseKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setVaultError('');
+    setVaultMsg('');
+    setVaultLoading(true);
+
+    try {
+      await rotateDatabaseKey(
+        vaultStatus?.passphraseEnabled
+          ? { current_passphrase: rotationPassphrase }
+          : undefined,
+      );
+      setVaultMsg('Database encryption key rotated.');
+      setRotationPassphrase('');
+    } catch (vaultMutationError) {
+      setVaultError(getErrorMessage(vaultMutationError, 'Failed to rotate the database encryption key.'));
+    } finally {
+      setVaultLoading(false);
     }
   };
 
@@ -78,29 +242,26 @@ export default function SettingsPage() {
       setPwError('New passwords do not match.');
       return;
     }
-    if (newPassword.length < 6) {
-      setPwError('Password must be at least 6 characters.');
+    if (newPassword.length < 8) {
+      setPwError('Password must be at least 8 characters.');
       return;
     }
 
     setPwSaving(true);
-    const res = await fetch(apiPath('/api/settings'), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-    });
-
-    const data = await res.json();
-    setPwSaving(false);
-
-    if (res.ok) {
+    try {
+      await changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
       setPwMsg('Password changed successfully.');
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
       setTimeout(() => setPwMsg(''), 3000);
-    } else {
-      setPwError(data.error || 'Failed to change password.');
+    } catch (passwordError) {
+      setPwError(getErrorMessage(passwordError, 'Failed to change password.'));
+    } finally {
+      setPwSaving(false);
     }
   };
 
@@ -277,21 +438,217 @@ export default function SettingsPage() {
             </form>
           </div>
 
+          <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold text-white">Encrypted Vault</h2>
+                <p className="mt-1 text-sm text-gray-400">
+                  Desktop data stays encrypted at rest. You can add a separate vault passphrase so the app cannot read the database until you unlock it.
+                </p>
+              </div>
+              {vaultStatus?.passphraseEnabled && (
+                <button
+                  type="button"
+                  onClick={handleLockVault}
+                  disabled={vaultLoading}
+                  className="rounded-lg border border-gray-700 px-3 py-2 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Lock Now
+                </button>
+              )}
+            </div>
+
+            <div className="mt-4 rounded-lg border border-gray-800 bg-gray-950/60 p-4">
+              <p className="text-sm text-white">
+                {vaultStatus?.passphraseEnabled
+                  ? 'Vault passphrase protection is enabled.'
+                  : 'Vault passphrase protection is not enabled.'}
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                {vaultStatus?.passphraseEnabled
+                  ? 'Signing out will lock the encrypted database until the passphrase is entered again.'
+                  : 'The database key currently lives only in the OS credential store, which still protects the file on disk.'}
+              </p>
+            </div>
+
+            {vaultError && (
+              <div className="mt-4 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-400">
+                {vaultError}
+              </div>
+            )}
+
+            {vaultMsg && (
+              <div className="mt-4 rounded-lg border border-green-800 bg-green-900/30 px-3 py-2 text-sm text-green-400">
+                {vaultMsg}
+              </div>
+            )}
+
+            {!vaultStatus?.passphraseEnabled ? (
+              <form onSubmit={handleEnableVaultPassphrase} className="mt-5 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Account Password</label>
+                  <input
+                    type="password"
+                    value={accountPassword}
+                    onChange={e => setAccountPassword(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Confirm your sign-in password"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">New Vault Passphrase</label>
+                  <input
+                    type="password"
+                    value={vaultPassphrase}
+                    onChange={e => setVaultPassphrase(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="At least 8 characters"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Confirm Vault Passphrase</label>
+                  <input
+                    type="password"
+                    value={confirmVaultPassphrase}
+                    onChange={e => setConfirmVaultPassphrase(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Repeat the vault passphrase"
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={vaultLoading}
+                  className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                >
+                  {vaultLoading ? 'Saving...' : 'Enable Vault Passphrase'}
+                </button>
+              </form>
+            ) : (
+              <div className="mt-5 grid gap-6 lg:grid-cols-2">
+                <form onSubmit={handleChangeVaultPassphrase} className="space-y-4 rounded-lg border border-gray-800 bg-gray-950/40 p-4">
+                  <h3 className="text-sm font-semibold text-white">Change Vault Passphrase</h3>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-1.5">Current Vault Passphrase</label>
+                    <input
+                      type="password"
+                      value={currentVaultPassphrase}
+                      onChange={e => setCurrentVaultPassphrase(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-1.5">New Vault Passphrase</label>
+                    <input
+                      type="password"
+                      value={newVaultPassphrase}
+                      onChange={e => setNewVaultPassphrase(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-1.5">Confirm New Vault Passphrase</label>
+                    <input
+                      type="password"
+                      value={confirmNewVaultPassphrase}
+                      onChange={e => setConfirmNewVaultPassphrase(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={vaultLoading}
+                    className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+                  >
+                    {vaultLoading ? 'Saving...' : 'Update Vault Passphrase'}
+                  </button>
+                </form>
+
+                <form onSubmit={handleClearVaultPassphrase} className="space-y-4 rounded-lg border border-gray-800 bg-gray-950/40 p-4">
+                  <h3 className="text-sm font-semibold text-white">Remove Vault Passphrase</h3>
+                  <p className="text-xs text-gray-500">
+                    This keeps SQLCipher encryption on disk, but the app will unlock with the OS credential store only.
+                  </p>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-1.5">Current Vault Passphrase</label>
+                    <input
+                      type="password"
+                      value={removeVaultPassphrase}
+                      onChange={e => setRemoveVaultPassphrase(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={vaultLoading}
+                    className="rounded-lg border border-red-700 px-5 py-2.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {vaultLoading ? 'Saving...' : 'Remove Vault Passphrase'}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            <form onSubmit={handleRotateDatabaseKey} className="mt-6 rounded-lg border border-gray-800 bg-gray-950/40 p-4">
+              <h3 className="text-sm font-semibold text-white">Rotate Database Encryption Key</h3>
+              <p className="mt-1 text-xs text-gray-500">
+                This generates a fresh SQLCipher database key and rewrites the local encrypted store to use it.
+              </p>
+
+              {vaultStatus?.passphraseEnabled && (
+                <div className="mt-4">
+                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Current Vault Passphrase</label>
+                  <input
+                    type="password"
+                    value={rotationPassphrase}
+                    onChange={e => setRotationPassphrase(e.target.value)}
+                    className="w-full max-w-md bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Required to rewrap the new key"
+                    required
+                  />
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={vaultLoading}
+                className="mt-4 rounded-lg border border-gray-700 px-5 py-2.5 text-sm font-medium text-gray-100 transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {vaultLoading ? 'Rotating...' : 'Rotate Encryption Key'}
+              </button>
+            </form>
+          </div>
+
           {/* App Info */}
           <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-5">
             <h2 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wide">App Info</h2>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-gray-500">Storage</span>
-                <span className="text-gray-300">Managed Postgres (DATABASE_URL)</span>
+                <span className="text-gray-300">Local SQLCipher + OS credential store</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-500">Auth</span>
-                <span className="text-gray-300">bcrypt + JWT (httpOnly cookie)</span>
+                <span className="text-gray-300">bcrypt + desktop session state</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-500">Base path</span>
-                <span className="text-gray-300 font-mono text-xs">APP_BASE_PATH</span>
+                <span className="text-gray-500">Vault</span>
+                <span className="text-gray-300">{vaultStatus?.passphraseEnabled ? 'Passphrase + keychain' : 'Keychain only'}</span>
               </div>
             </div>
           </div>

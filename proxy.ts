@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { stripBasePath, withBasePath } from "@/lib/basepath";
 
 export function proxy(request: NextRequest) {
+  if (process.env.DESKTOP_SHELL === "1") {
+    return NextResponse.next();
+  }
+
   const requestPath = stripBasePath(request.nextUrl.pathname);
   const isPublicPath =
     requestPath === "/login" ||

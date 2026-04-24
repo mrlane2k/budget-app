@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { isSetupRequired } from "@/lib/data";
+import { getSetupStatus } from "@/lib/server/user-service";
 
 export async function GET() {
-  const setupRequired = await isSetupRequired();
-  return NextResponse.json({ setupRequired });
+  return NextResponse.json(await getSetupStatus());
 }

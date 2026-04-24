@@ -1,8 +1,14 @@
 'use client';
-import { apiPath } from '@/lib/basepath';
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { getErrorMessage } from '@/lib/client/errors';
+import {
+  createInitialUser,
+  getVaultStatus,
+  importLegacyDatabase,
+  type VaultStatus,
+} from '@/lib/client/user-client';
 
 export default function SetupPage() {
   const router = useRouter();
@@ -11,23 +17,35 @@ export default function SetupPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
 
   useEffect(() => {
-    fetch(apiPath('/api/setup/status'))
-      .then((response) => response.json())
-      .then((data: { setupRequired?: boolean }) => {
-        if (!data.setupRequired) {
+    async function loadSetupStatus() {
+      try {
+        const status = await getVaultStatus();
+        setVaultStatus(status);
+
+        if (status.passphraseEnabled && !status.unlocked) {
+          router.replace('/login');
+          return;
+        }
+
+        if (status.setupRequired === false) {
           router.replace('/login');
           return;
         }
 
         setChecking(false);
-      })
-      .catch(() => {
-        setError('Unable to check setup status.');
+      } catch (statusError) {
+        setError(getErrorMessage(statusError, 'Unable to check setup status.'));
         setChecking(false);
-      });
+      }
+    }
+
+    void loadSetupStatus();
   }, [router]);
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -47,24 +65,32 @@ export default function SetupPage() {
     setLoading(true);
 
     try {
-      const response = await fetch(apiPath('/api/setup'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        setError(data.error || 'Setup failed.');
-        return;
-      }
-
-      router.push('/');
+      await createInitialUser({ username, password });
+      router.push('/bills');
       router.refresh();
-    } catch {
-      setError('Network error. Please try again.');
+    } catch (submitError) {
+      setError(getErrorMessage(submitError, 'Network error. Please try again.'));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleImportLegacyData = async () => {
+    setError('');
+    setInfo('');
+    setImporting(true);
+
+    try {
+      const result = await importLegacyDatabase();
+      setInfo(
+        `Imported ${result.importedUsers} user, ${result.importedAccounts} accounts, ${result.importedBills} bills, ${result.importedBillPayments} bill payments, ${result.importedCreditCards ?? 0} credit cards, ${result.importedCreditCardTransactions ?? 0} credit card entries, ${result.importedTransfers ?? 0} transfers, and ${result.importedCashTransactions ?? 0} cash transactions from the earlier local database.`,
+      );
+      router.replace('/login');
+      router.refresh();
+    } catch (importError) {
+      setError(getErrorMessage(importError, 'Failed to import your earlier local database.'));
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -81,6 +107,25 @@ export default function SetupPage() {
           <p className="text-sm text-gray-400 mb-5">
             This screen is only available until the first user is created.
           </p>
+
+          {vaultStatus?.legacyImportAvailable && (
+            <div className="mb-5 rounded-lg border border-amber-800 bg-amber-950/40 p-4">
+              <p className="text-sm text-amber-200">
+                A previous local prototype database was found on this machine.
+              </p>
+              <p className="mt-1 text-xs text-amber-300/80">
+                You can import that data into the new encrypted desktop vault instead of creating a fresh account.
+              </p>
+              <button
+                type="button"
+                onClick={handleImportLegacyData}
+                disabled={importing || loading || checking}
+                className="mt-3 rounded-lg border border-amber-700 px-3 py-2 text-sm font-medium text-amber-100 transition-colors hover:bg-amber-900/40 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {importing ? 'Importing...' : 'Import Existing Local Data'}
+              </button>
+            </div>
+          )}
 
           {checking ? (
             <div className="text-sm text-gray-400">Checking setup status...</div>
@@ -132,6 +177,12 @@ export default function SetupPage() {
               {error && (
                 <div className="bg-red-900/30 border border-red-800 rounded-lg px-3 py-2.5 text-red-400 text-sm">
                   {error}
+                </div>
+              )}
+
+              {info && (
+                <div className="rounded-lg border border-green-800 bg-green-900/30 px-3 py-2.5 text-sm text-green-400">
+                  {info}
                 </div>
               )}
 

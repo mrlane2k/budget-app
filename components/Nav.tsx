@@ -1,9 +1,10 @@
 ﻿'use client';
-import { apiPath, stripBasePath } from '@/lib/basepath';
+import { stripBasePath } from '@/lib/basepath';
 
 import type { ReactNode, SVGProps } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { logout } from '@/lib/client/user-client';
 
 function Icon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -132,7 +133,7 @@ export default function Nav() {
   const currentPath = stripBasePath(pathname);
 
   const handleLogout = async () => {
-    await fetch(apiPath('/api/auth/logout'), { method: 'POST' });
+    await logout();
     router.push('/login');
   };
 
