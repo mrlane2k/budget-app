@@ -33,12 +33,25 @@ export async function listBills(): Promise<Bill[]> {
 }
 
 export async function saveBill(input: BillInput, billId?: number): Promise<Bill> {
+  const tauriInput = {
+    name: input.name,
+    category: input.category,
+    amount: input.amount,
+    dueDay: input.due_day,
+    due_day: input.due_day,
+    dueDate: input.due_date,
+    due_date: input.due_date,
+    isAutopay: input.is_autopay,
+    is_autopay: input.is_autopay,
+    frequency: input.frequency,
+  };
+
   return request<Bill>({
     path: billId ? `/api/bills/${billId}` : "/api/bills",
     method: billId ? "PUT" : "POST",
     body: input,
     tauriCommand: billId ? "update_bill" : "create_bill",
-    tauriArgs: billId ? { bill_id: billId, ...input } : input,
+    tauriArgs: billId ? { billId, bill_id: billId, ...tauriInput } : tauriInput,
   });
 }
 
@@ -47,7 +60,7 @@ export async function deleteBill(billId: number): Promise<{ success: true }> {
     path: `/api/bills/${billId}`,
     method: "DELETE",
     tauriCommand: "delete_bill",
-    tauriArgs: { bill_id: billId },
+    tauriArgs: { billId, bill_id: billId },
   });
 }
 
@@ -65,6 +78,14 @@ export async function upsertBillPayment(
     method: "POST",
     body: input,
     tauriCommand: "upsert_bill_payment",
-    tauriArgs: { bill_id: billId, ...input },
+    tauriArgs: {
+      billId,
+      bill_id: billId,
+      year: input.year,
+      month: input.month,
+      status: input.status,
+      amountPaid: input.amount_paid,
+      amount_paid: input.amount_paid,
+    },
   });
 }

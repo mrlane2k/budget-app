@@ -1,6 +1,6 @@
 [package]
 name = "budget_app"
-version = "1.0.1"
+version = "1.0.2"
 description = "Budget App desktop shell"
 authors = ["Budget App contributors"]
 license = ""

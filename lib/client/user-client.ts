@@ -126,12 +126,19 @@ export async function updateSettings(input: {
   monthly_income: number;
   current_savings: number;
 }): Promise<UserSettings> {
+  const tauriInput = {
+    payCycle: input.pay_cycle,
+    lastPaycheckDate: input.last_paycheck_date,
+    monthlyIncome: input.monthly_income,
+    currentSavings: input.current_savings,
+  };
+
   return request<UserSettings>({
     path: "/api/settings",
     method: "PUT",
     body: input,
     tauriCommand: "update_settings",
-    tauriArgs: input,
+    tauriArgs: tauriInput,
   });
 }
 
@@ -139,12 +146,17 @@ export async function changePassword(input: {
   current_password: string;
   new_password: string;
 }): Promise<SuccessResponse> {
+  const tauriInput = {
+    currentPassword: input.current_password,
+    newPassword: input.new_password,
+  };
+
   return request<SuccessResponse>({
     path: "/api/settings",
     method: "PUT",
     body: input,
     tauriCommand: "change_password",
-    tauriArgs: input,
+    tauriArgs: tauriInput,
   });
 }
 
@@ -166,12 +178,17 @@ export async function changeVaultPassphrase(input: {
   new_passphrase: string;
 }): Promise<SuccessResponse> {
   await requireDesktopRuntime();
+  const tauriInput = {
+    currentPassphrase: input.current_passphrase,
+    newPassphrase: input.new_passphrase,
+  };
+
   return request<SuccessResponse>({
     path: "/api/desktop/vault/passphrase",
     method: "PUT",
     body: input,
     tauriCommand: "change_vault_passphrase",
-    tauriArgs: input,
+    tauriArgs: tauriInput,
   });
 }
 
@@ -179,12 +196,16 @@ export async function clearVaultPassphrase(input: {
   current_passphrase: string;
 }): Promise<SuccessResponse> {
   await requireDesktopRuntime();
+  const tauriInput = {
+    currentPassphrase: input.current_passphrase,
+  };
+
   return request<SuccessResponse>({
     path: "/api/desktop/vault/passphrase",
     method: "DELETE",
     body: input,
     tauriCommand: "clear_vault_passphrase",
-    tauriArgs: input,
+    tauriArgs: tauriInput,
   });
 }
 
@@ -201,11 +222,15 @@ export async function rotateDatabaseKey(input?: {
   current_passphrase?: string;
 }): Promise<SuccessResponse> {
   await requireDesktopRuntime();
+  const tauriInput = input?.current_passphrase
+    ? { currentPassphrase: input.current_passphrase }
+    : {};
+
   return request<SuccessResponse>({
     path: "/api/desktop/vault/rekey",
     method: "POST",
     body: input,
     tauriCommand: "rotate_database_key",
-    tauriArgs: input ?? {},
+    tauriArgs: tauriInput,
   });
 }

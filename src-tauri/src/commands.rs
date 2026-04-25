@@ -1538,6 +1538,10 @@ fn rotate_database_encryption_key_with_current_key(
 }
 
 fn copy_legacy_users(source: &Connection, destination: &Connection) -> CommandResult<i64> {
+    if !sqlite_table_exists(source, "users")? {
+        return Ok(0);
+    }
+
     let mut select = source
         .prepare(
             "
@@ -1622,6 +1626,10 @@ fn copy_legacy_users(source: &Connection, destination: &Connection) -> CommandRe
 }
 
 fn copy_legacy_accounts(source: &Connection, destination: &Connection) -> CommandResult<i64> {
+    if !sqlite_table_exists(source, "accounts")? {
+        return Ok(0);
+    }
+
     let mut select = source
         .prepare(
             "
@@ -1721,6 +1729,10 @@ fn copy_legacy_accounts(source: &Connection, destination: &Connection) -> Comman
 }
 
 fn copy_legacy_bills(source: &Connection, destination: &Connection) -> CommandResult<i64> {
+    if !sqlite_table_exists(source, "bills")? {
+        return Ok(0);
+    }
+
     let mut select = source
         .prepare(
             "
@@ -1806,6 +1818,10 @@ fn copy_legacy_bills(source: &Connection, destination: &Connection) -> CommandRe
 }
 
 fn copy_legacy_bill_payments(source: &Connection, destination: &Connection) -> CommandResult<i64> {
+    if !sqlite_table_exists(source, "bill_payments")? {
+        return Ok(0);
+    }
+
     let mut select = source
         .prepare(
             "
@@ -1970,24 +1986,47 @@ fn copy_legacy_credit_card_transactions(
         return Ok(0);
     }
 
-    let mut select = source
-        .prepare(
-            "
+    let has_category = sqlite_column_exists(source, "credit_card_transactions", "category")?;
+    let has_merchant_name =
+        sqlite_column_exists(source, "credit_card_transactions", "merchant_name")?;
+    let has_source_account_id =
+        sqlite_column_exists(source, "credit_card_transactions", "source_account_id")?;
+
+    let select_sql = format!(
+        "
       SELECT
         id,
         card_id,
         type,
         amount,
         note,
-        category,
-        merchant_name,
-        source_account_id,
+        {category},
+        {merchant_name},
+        {source_account_id},
         transaction_date,
         created_at
       FROM credit_card_transactions
       ORDER BY id
       ",
-        )
+        category = if has_category {
+            "category"
+        } else {
+            "NULL AS category"
+        },
+        merchant_name = if has_merchant_name {
+            "merchant_name"
+        } else {
+            "NULL AS merchant_name"
+        },
+        source_account_id = if has_source_account_id {
+            "source_account_id"
+        } else {
+            "NULL AS source_account_id"
+        }
+    );
+
+    let mut select = source
+        .prepare(&select_sql)
         .map_err(|error| format!("Failed to read legacy credit card transactions: {error}"))?;
 
     let rows = select
@@ -2556,6 +2595,31 @@ fn sqlite_table_exists(connection: &Connection, table_name: &str) -> CommandResu
         .map_err(|error| format!("Failed to inspect legacy database tables: {error}"))?;
 
     Ok(exists == 1)
+}
+
+fn sqlite_column_exists(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> CommandResult<bool> {
+    let pragma = format!("PRAGMA table_info({table_name})");
+    let mut statement = connection
+        .prepare(&pragma)
+        .map_err(|error| format!("Failed to inspect legacy table columns: {error}"))?;
+
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("Failed to inspect legacy table columns: {error}"))?;
+
+    for row in rows {
+        if row.map_err(|error| format!("Failed to read legacy table column: {error}"))?
+            == column_name
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn archive_legacy_database_files(legacy_db_path: &PathBuf) -> CommandResult<bool> {
