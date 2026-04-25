@@ -8,7 +8,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{hash, DEFAULT_COST};
 use keyring::{Entry, Error as KeyringError};
 use pbkdf2::pbkdf2_hmac;
 use rand::{rngs::OsRng, RngCore};
@@ -31,7 +31,6 @@ const MINIMUM_VAULT_PASSPHRASE_LENGTH: usize = 8;
 #[derive(Clone)]
 pub struct SessionUser {
     user_id: i64,
-    username: String,
 }
 
 pub struct DesktopState {
@@ -59,10 +58,25 @@ impl DesktopState {
             cached_database_key: Mutex::new(None),
         };
 
+        state.repair_stale_vault_state()?;
+
         if !state.is_vault_passphrase_enabled()? {
             state.initialize()?;
         }
         Ok(state)
+    }
+
+    fn repair_stale_vault_state(&self) -> CommandResult<()> {
+        if self.db_path.exists() {
+            return Ok(());
+        }
+
+        delete_keyring_entry(&get_database_key_entry()?)?;
+        delete_keyring_entry(&get_vault_entry()?)?;
+        self.set_cached_database_key(None)?;
+        self.set_session(None)?;
+
+        Ok(())
     }
 
     fn initialize(&self) -> CommandResult<()> {
@@ -256,7 +270,16 @@ impl DesktopState {
             .lock()
             .map_err(|_| "Failed to access desktop session.".to_string())?;
 
-        session.clone().ok_or_else(|| "Unauthorized".to_string())
+        if let Some(session_user) = session.clone() {
+            return Ok(session_user);
+        }
+
+        drop(session);
+
+        let connection = self.open_connection()?;
+        fetch_primary_user(&connection)?
+            .map(|(user_id, _username)| SessionUser { user_id })
+            .ok_or_else(|| "Setup is required before using the app.".to_string())
     }
 
     fn set_session(&self, user: Option<SessionUser>) -> CommandResult<()> {
@@ -558,12 +581,6 @@ pub struct SetupResponse {
 }
 
 #[derive(Serialize)]
-pub struct LoginResponse {
-    success: bool,
-    username: String,
-}
-
-#[derive(Serialize)]
 pub struct SuccessResponse {
     success: bool,
     message: Option<String>,
@@ -852,39 +869,20 @@ fn ensure_setup_not_complete(connection: &Connection) -> CommandResult<()> {
     Ok(())
 }
 
-fn fetch_user_by_username(
-    connection: &Connection,
-    username: &str,
-) -> CommandResult<Option<(i64, String, String)>> {
+fn fetch_primary_user(connection: &Connection) -> CommandResult<Option<(i64, String)>> {
     connection
         .query_row(
             "
-      SELECT id, username, password_hash
+      SELECT id, username
       FROM users
-      WHERE username = ?1
+      ORDER BY id
+      LIMIT 1
       ",
-            [username],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(|error| format!("Failed to load local user: {error}"))
-}
-
-fn verify_account_password(
-    connection: &Connection,
-    username: &str,
-    current_password: &str,
-) -> CommandResult<()> {
-    let user = fetch_user_by_username(connection, username)?
-        .ok_or_else(|| "User not found".to_string())?;
-
-    let is_valid = verify(current_password, &user.2)
-        .map_err(|error| format!("Failed to verify local password: {error}"))?;
-    if !is_valid {
-        return Err("Current password is incorrect".to_string());
-    }
-
-    Ok(())
+        .map_err(|error| format!("Failed to load local profile: {error}"))
 }
 
 fn fetch_user_settings(
@@ -3537,23 +3535,11 @@ pub fn get_setup_status(state: State<'_, DesktopState>) -> CommandResult<SetupSt
 }
 
 #[tauri::command]
-pub fn create_initial_user(
-    state: State<'_, DesktopState>,
-    username: String,
-    password: String,
-) -> CommandResult<SetupResponse> {
-    let username = username.trim().to_string();
-    if username.is_empty() || password.is_empty() {
-        return Err("Username and password are required.".to_string());
-    }
-    if password.len() < 8 {
-        return Err("Password must be at least 8 characters.".to_string());
-    }
-
+pub fn create_local_profile(state: State<'_, DesktopState>) -> CommandResult<SetupResponse> {
     let mut connection = state.open_connection()?;
     ensure_setup_not_complete(&connection)?;
 
-    let password_hash = hash(password, DEFAULT_COST)
+    let password_hash = hash("local-profile-disabled", DEFAULT_COST)
         .map_err(|error| format!("Failed to hash password: {error}"))?;
 
     let transaction = connection
@@ -3574,16 +3560,16 @@ pub fn create_initial_user(
       )
       VALUES (?1, ?2, ?3, NULL, 0, 0, 0)
       ",
-            params![username, password_hash, DEFAULT_PAY_CYCLE],
+            params!["local-profile", password_hash, DEFAULT_PAY_CYCLE],
         )
         .map_err(|error| {
             if let rusqlite::Error::SqliteFailure(inner, _) = &error {
                 if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
-                    return "That username is already in use.".to_string();
+                    return "A local profile already exists.".to_string();
                 }
             }
 
-            format!("Failed to create local user: {error}")
+            format!("Failed to create local profile: {error}")
         })?;
 
     let user_id = transaction.last_insert_rowid();
@@ -3594,53 +3580,11 @@ pub fn create_initial_user(
 
     let connection = state.open_connection()?;
     let user = fetch_user_settings(&connection, user_id)?;
-    state.set_session(Some(SessionUser {
-        user_id,
-        username: user.username.clone(),
-    }))?;
+    state.set_session(Some(SessionUser { user_id }))?;
 
     Ok(SetupResponse {
         success: true,
         user,
-    })
-}
-
-#[tauri::command]
-pub fn login(
-    state: State<'_, DesktopState>,
-    username: String,
-    password: String,
-) -> CommandResult<LoginResponse> {
-    let username = username.trim().to_string();
-    if username.is_empty() || password.is_empty() {
-        return Err("Username and password are required".to_string());
-    }
-
-    let connection = state.open_connection()?;
-    let count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
-        .map_err(|error| format!("Failed to check local setup status: {error}"))?;
-    if count == 0 {
-        return Err("Setup is required before logging in.".to_string());
-    }
-
-    let user = fetch_user_by_username(&connection, &username)?
-        .ok_or_else(|| "Invalid credentials".to_string())?;
-
-    let is_valid = verify(password, &user.2)
-        .map_err(|error| format!("Failed to verify local password: {error}"))?;
-    if !is_valid {
-        return Err("Invalid credentials".to_string());
-    }
-
-    state.set_session(Some(SessionUser {
-        user_id: user.0,
-        username: user.1.clone(),
-    }))?;
-
-    Ok(LoginResponse {
-        success: true,
-        username: user.1,
     })
 }
 
@@ -3720,58 +3664,24 @@ pub fn update_settings(
 
 #[tauri::command]
 pub fn change_password(
-    state: State<'_, DesktopState>,
-    current_password: String,
-    new_password: String,
+    _state: State<'_, DesktopState>,
+    _current_password: String,
+    _new_password: String,
 ) -> CommandResult<SuccessResponse> {
-    let session = state.current_session()?;
-    if current_password.is_empty() || new_password.is_empty() {
-        return Err("Current and new password are required".to_string());
-    }
-    if new_password.len() < 8 {
-        return Err("Password must be at least 8 characters.".to_string());
-    }
-
-    let connection = state.open_connection()?;
-    let user = fetch_user_by_username(&connection, &session.username)?
-        .ok_or_else(|| "User not found".to_string())?;
-
-    let is_valid = verify(current_password, &user.2)
-        .map_err(|error| format!("Failed to verify local password: {error}"))?;
-    if !is_valid {
-        return Err("Current password is incorrect".to_string());
-    }
-
-    let password_hash = hash(new_password, DEFAULT_COST)
-        .map_err(|error| format!("Failed to hash local password: {error}"))?;
-
-    connection
-        .execute(
-            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
-            params![password_hash, session.user_id],
-        )
-        .map_err(|error| format!("Failed to update local password: {error}"))?;
-
-    Ok(SuccessResponse {
-        success: true,
-        message: Some("Password updated".to_string()),
-    })
+    Err("App passwords are no longer used. Use the vault passphrase for local locking instead."
+        .to_string())
 }
 
 #[tauri::command]
 pub fn set_vault_passphrase(
     state: State<'_, DesktopState>,
-    account_password: String,
     passphrase: String,
 ) -> CommandResult<SuccessResponse> {
     validate_vault_passphrase(&passphrase)?;
-    let session = state.current_session()?;
     if state.is_vault_passphrase_enabled()? {
         return Err("Vault passphrase protection is already enabled.".to_string());
     }
 
-    let connection = state.open_connection()?;
-    verify_account_password(&connection, &session.username, &account_password)?;
     let database_key = state.load_database_key_for_access()?;
     enable_vault_passphrase_with_key(&state, &database_key, &passphrase)?;
 
@@ -3787,7 +3697,6 @@ pub fn change_vault_passphrase(
     current_passphrase: String,
     new_passphrase: String,
 ) -> CommandResult<SuccessResponse> {
-    state.current_session()?;
     validate_vault_passphrase(&new_passphrase)?;
 
     let envelope = load_vault_envelope()?
@@ -3806,8 +3715,6 @@ pub fn clear_vault_passphrase(
     state: State<'_, DesktopState>,
     current_passphrase: String,
 ) -> CommandResult<SuccessResponse> {
-    state.current_session()?;
-
     let envelope = load_vault_envelope()?
         .ok_or_else(|| "Vault passphrase protection is not enabled.".to_string())?;
     let database_key = unwrap_database_key(&envelope, &current_passphrase)?;
@@ -3824,8 +3731,6 @@ pub fn rotate_database_key(
     state: State<'_, DesktopState>,
     current_passphrase: Option<String>,
 ) -> CommandResult<SuccessResponse> {
-    state.current_session()?;
-
     if state.is_vault_passphrase_enabled()? {
         let passphrase = current_passphrase.as_deref().ok_or_else(|| {
             "Current vault passphrase is required to rotate the database key.".to_string()

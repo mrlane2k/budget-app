@@ -4,7 +4,7 @@ import { stripBasePath } from '@/lib/basepath';
 import type { ReactNode, SVGProps } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { logout } from '@/lib/client/user-client';
+import { lockVault } from '@/lib/client/user-client';
 
 function Icon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -132,8 +132,8 @@ export default function Nav() {
   const router = useRouter();
   const currentPath = stripBasePath(pathname);
 
-  const handleLogout = async () => {
-    await logout();
+  const handleLockVault = async () => {
+    await lockVault();
     router.push('/login');
   };
 
@@ -183,13 +183,13 @@ export default function Nav() {
 
       <div className="border-t border-gray-800 p-3">
         <button
-          onClick={handleLogout}
+          onClick={handleLockVault}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-400 transition-colors hover:bg-gray-800 hover:text-white"
         >
           <span className="flex h-5 w-5 items-center justify-center">
             <LogoutIcon />
           </span>
-          Logout
+          Lock Vault
         </button>
       </div>
     </nav>

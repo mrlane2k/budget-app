@@ -6,7 +6,6 @@ import Nav from '@/components/Nav';
 import { getErrorMessage } from '@/lib/client/errors';
 import {
   changeVaultPassphrase,
-  changePassword,
   clearVaultPassphrase,
   getSettings,
   getVaultStatus,
@@ -37,17 +36,9 @@ export default function SettingsPage() {
   const [currentSavings, setCurrentSavings] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
-
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [pwSaving, setPwSaving] = useState(false);
-  const [pwMsg, setPwMsg] = useState('');
-  const [pwError, setPwError] = useState('');
   const [vaultLoading, setVaultLoading] = useState(false);
   const [vaultMsg, setVaultMsg] = useState('');
   const [vaultError, setVaultError] = useState('');
-  const [accountPassword, setAccountPassword] = useState('');
   const [vaultPassphrase, setVaultPassphrase] = useState('');
   const [confirmVaultPassphrase, setConfirmVaultPassphrase] = useState('');
   const [currentVaultPassphrase, setCurrentVaultPassphrase] = useState('');
@@ -130,12 +121,10 @@ export default function SettingsPage() {
     setVaultLoading(true);
     try {
       await enableDesktopVaultPassphrase({
-        account_password: accountPassword,
         passphrase: vaultPassphrase,
       });
       setVaultStatus(await getVaultStatus());
       setVaultMsg('Vault passphrase enabled.');
-      setAccountPassword('');
       setVaultPassphrase('');
       setConfirmVaultPassphrase('');
     } catch (vaultMutationError) {
@@ -233,38 +222,6 @@ export default function SettingsPage() {
     }
   };
 
-  const handleChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPwError('');
-    setPwMsg('');
-
-    if (newPassword !== confirmPassword) {
-      setPwError('New passwords do not match.');
-      return;
-    }
-    if (newPassword.length < 8) {
-      setPwError('Password must be at least 8 characters.');
-      return;
-    }
-
-    setPwSaving(true);
-    try {
-      await changePassword({
-        current_password: currentPassword,
-        new_password: newPassword,
-      });
-      setPwMsg('Password changed successfully.');
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-      setTimeout(() => setPwMsg(''), 3000);
-    } catch (passwordError) {
-      setPwError(getErrorMessage(passwordError, 'Failed to change password.'));
-    } finally {
-      setPwSaving(false);
-    }
-  };
-
   return (
     <div className="flex min-h-screen">
       <Nav />
@@ -272,9 +229,7 @@ export default function SettingsPage() {
         <div className="max-w-2xl mx-auto">
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-white">Settings</h1>
-            {settings && (
-              <p className="text-gray-400 mt-1">Logged in as <span className="text-white">{settings.username}</span></p>
-            )}
+            <p className="mt-1 text-gray-400">Manage your local profile, paycheck settings, and vault protection.</p>
           </div>
 
           {/* Pay Cycle Settings */}
@@ -376,68 +331,6 @@ export default function SettingsPage() {
             </form>
           </div>
 
-          {/* Change Password */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-base font-semibold text-white mb-5">Change Password</h2>
-            <form onSubmit={handleChangePassword} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1.5">Current Password</label>
-                <input
-                  type="password"
-                  value={currentPassword}
-                  onChange={e => setCurrentPassword(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="••••••••"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1.5">New Password</label>
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={e => setNewPassword(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="••••••••"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1.5">Confirm New Password</label>
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={e => setConfirmPassword(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="••••••••"
-                  required
-                />
-              </div>
-
-              {pwError && (
-                <div className="bg-red-900/30 border border-red-800 rounded-lg px-3 py-2 text-red-400 text-sm">
-                  {pwError}
-                </div>
-              )}
-
-              {pwMsg && (
-                <div className="bg-green-900/30 border border-green-800 rounded-lg px-3 py-2 text-green-400 text-sm">
-                  {pwMsg}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={pwSaving}
-                className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-              >
-                {pwSaving ? 'Updating...' : 'Change Password'}
-              </button>
-            </form>
-          </div>
-
           <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -485,18 +378,6 @@ export default function SettingsPage() {
 
             {!vaultStatus?.passphraseEnabled ? (
               <form onSubmit={handleEnableVaultPassphrase} className="mt-5 space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-400 mb-1.5">Account Password</label>
-                  <input
-                    type="password"
-                    value={accountPassword}
-                    onChange={e => setAccountPassword(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Confirm your sign-in password"
-                    required
-                  />
-                </div>
-
                 <div>
                   <label className="block text-sm font-medium text-gray-400 mb-1.5">New Vault Passphrase</label>
                   <input
@@ -644,7 +525,7 @@ export default function SettingsPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-500">Auth</span>
-                <span className="text-gray-300">bcrypt + desktop session state</span>
+                <span className="text-gray-300">Single local profile + optional vault passphrase</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-500">Vault</span>

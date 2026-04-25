@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getErrorMessage } from '@/lib/client/errors';
 import {
-  createInitialUser,
+  createLocalProfile,
   getVaultStatus,
   importLegacyDatabase,
   type VaultStatus,
@@ -12,9 +12,6 @@ import {
 
 export default function SetupPage() {
   const router = useRouter();
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -34,7 +31,7 @@ export default function SetupPage() {
         }
 
         if (status.setupRequired === false) {
-          router.replace('/login');
+          router.replace('/');
           return;
         }
 
@@ -51,25 +48,14 @@ export default function SetupPage() {
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
-
-    if (password !== confirmPassword) {
-      setError('Passwords do not match.');
-      return;
-    }
-
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
-      return;
-    }
-
     setLoading(true);
 
     try {
-      await createInitialUser({ username, password });
-      router.push('/bills');
+      await createLocalProfile();
+      router.push('/');
       router.refresh();
     } catch (submitError) {
-      setError(getErrorMessage(submitError, 'Network error. Please try again.'));
+      setError(getErrorMessage(submitError, 'Unable to initialize your local profile.'));
     } finally {
       setLoading(false);
     }
@@ -85,7 +71,7 @@ export default function SetupPage() {
       setInfo(
         `Imported ${result.importedUsers} user, ${result.importedAccounts} accounts, ${result.importedBills} bills, ${result.importedBillPayments} bill payments, ${result.importedCreditCards ?? 0} credit cards, ${result.importedCreditCardTransactions ?? 0} credit card entries, ${result.importedTransfers ?? 0} transfers, ${result.importedCashTransactions ?? 0} cash transactions, ${result.importedMonthlyBudgets ?? 0} monthly budgets, and ${result.importedMonthlyCloses ?? 0} monthly close records from the earlier local database.${result.archivedLegacyDatabase ? ' The legacy database was archived so it will not be offered for import again.' : ''}`,
       );
-      router.replace('/login');
+      router.replace('/');
       router.refresh();
     } catch (importError) {
       setError(getErrorMessage(importError, 'Failed to import your earlier local database.'));
@@ -95,26 +81,24 @@ export default function SetupPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+    <div className="flex min-h-screen items-center justify-center bg-gray-950 p-4">
       <div className="w-full max-w-md">
-        <div className="text-center mb-8">
+        <div className="mb-8 text-center">
           <h1 className="text-3xl font-bold text-white">BudgetApp</h1>
-          <p className="text-gray-400 mt-2">Create your first admin account</p>
+          <p className="mt-2 text-gray-400">Initialize your local profile</p>
         </div>
 
-        <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 shadow-2xl">
-          <h2 className="text-lg font-semibold text-white mb-2">Initial Setup</h2>
-          <p className="text-sm text-gray-400 mb-5">
-            This screen is only available until the first user is created.
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-6 shadow-2xl">
+          <h2 className="mb-2 text-xl font-semibold text-white">First-Time Setup</h2>
+          <p className="mb-6 text-sm text-gray-400">
+            This app is built for one local owner. Create the local profile for this device to get started.
           </p>
 
           {vaultStatus?.legacyImportAvailable && (
-            <div className="mb-5 rounded-lg border border-amber-800 bg-amber-950/40 p-4">
-              <p className="text-sm text-amber-200">
-                A previous local prototype database was found on this machine.
-              </p>
+            <div className="mb-5 rounded-lg border border-amber-800/70 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
+              <p className="font-medium">Earlier local data found</p>
               <p className="mt-1 text-xs text-amber-300/80">
-                You can import that data into the new encrypted desktop vault instead of creating a fresh account.
+                You can import that data into the new encrypted desktop vault instead of creating a fresh local profile.
               </p>
               <button
                 type="button"
@@ -131,54 +115,9 @@ export default function SetupPage() {
             <div className="text-sm text-gray-400">Checking setup status...</div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1.5">
-                  Username
-                </label>
-                <input
-                  type="text"
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="admin"
-                  required
-                  autoFocus
-                />
+              <div className="rounded-lg border border-blue-900 bg-blue-950/30 px-3 py-2.5 text-sm text-blue-200">
+                Budget App will create one local profile and keep your data encrypted on this device. You can add an optional vault passphrase later from Settings.
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1.5">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="At least 8 characters"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-400 mb-1.5">
-                  Confirm Password
-                </label>
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(event) => setConfirmPassword(event.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Repeat your password"
-                  required
-                />
-              </div>
-
-              {error && (
-                <div className="bg-red-900/30 border border-red-800 rounded-lg px-3 py-2.5 text-red-400 text-sm">
-                  {error}
-                </div>
-              )}
 
               {info && (
                 <div className="rounded-lg border border-green-800 bg-green-900/30 px-3 py-2.5 text-sm text-green-400">
@@ -186,12 +125,18 @@ export default function SetupPage() {
                 </div>
               )}
 
+              {error && (
+                <div className="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2.5 text-sm text-red-400">
+                  {error}
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={loading || checking}
-                className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:cursor-not-allowed text-white font-medium py-2.5 px-4 rounded-lg transition-colors"
+                className="w-full rounded-lg bg-blue-600 px-4 py-2.5 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-800"
               >
-                {loading ? 'Creating account...' : 'Create Admin Account'}
+                {loading ? 'Initializing...' : 'Create Local Profile'}
               </button>
             </form>
           )}

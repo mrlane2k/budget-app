@@ -28,10 +28,6 @@ type SuccessResponse = {
   message?: string;
 };
 
-type LoginResponse = SuccessResponse & {
-  username: string;
-};
-
 type SetupResponse = SuccessResponse & {
   user: UserSettings;
 };
@@ -101,29 +97,11 @@ export async function lockVault(): Promise<SuccessResponse> {
   });
 }
 
-export async function createInitialUser(input: {
-  username: string;
-  password: string;
-}): Promise<SetupResponse> {
+export async function createLocalProfile(): Promise<SetupResponse> {
   return request<SetupResponse>({
     path: "/api/setup",
     method: "POST",
-    body: input,
-    tauriCommand: "create_initial_user",
-    tauriArgs: input,
-  });
-}
-
-export async function login(input: {
-  username: string;
-  password: string;
-}): Promise<LoginResponse> {
-  return request<LoginResponse>({
-    path: "/api/auth/login",
-    method: "POST",
-    body: input,
-    tauriCommand: "login",
-    tauriArgs: input,
+    tauriCommand: "create_local_profile",
   });
 }
 
@@ -171,7 +149,6 @@ export async function changePassword(input: {
 }
 
 export async function setVaultPassphrase(input: {
-  account_password: string;
   passphrase: string;
 }): Promise<SuccessResponse> {
   await requireDesktopRuntime();
